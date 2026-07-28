@@ -3,6 +3,10 @@ import { Radio, Plane, Users, Thermometer } from 'lucide-react';
 import { useSimStore } from '../store/useSimStore';
 import hiaBase from '../data/hiaBase.json';
 import hiaWays from '../data/hiaWays.json';
+import hiaRoads from '../data/hiaRoads.json';
+import oldAirportWays from '../data/oldAirportWays.json';
+import dohaContext from '../data/dohaContext.json';
+import CoordDisplay from '../components/panels/CoordDisplay';
 import { getPlaneSprite, SPRITE_FLIP_DEG } from './planeSprites.js';
 
 // Body/tail livery pairs mirror Aircraft3D.jsx so the rendered 3D-model sprites
@@ -62,15 +66,22 @@ const PAGE_BG = '#c9d2dc';       // light ground; canvas background matches so e
 const GROUND = { fill: '#c9d2dc', stroke: '#b3bec9' };       // all land/airport surface
 const TERMINAL = { fill: '#aeb9c6', stroke: '#97a3b2' };     // terminals a touch darker to hint buildings
 const WATER = { fill: '#7fa8c9', stroke: '#6f9bbf' };        // the only distinct colour
+// Context areas OUTSIDE the operational airport (military compounds, big car/
+// staff parking) — the grey blobs visible in the reference. Kept within the
+// light-grey family (per the flat-ground palette) but a shade darker so they
+// read as distinct built-up land rather than blending into the ground.
+const MILITARY = { fill: '#b7bdc4', stroke: '#a4abb3' };
+const PARKING  = { fill: '#bcc4cd', stroke: '#a9b3bd' };
 const BASE_STYLE = {
   water: WATER, sea: WATER,
+  military: MILITARY, parking: PARKING,
   _terminal: TERMINAL,
 };
 function styleFor(props) {
   const t = props.subtype || props.type || '';
   if (BASE_STYLE[t]) return BASE_STYLE[t];
   if (t.startsWith('concourse') || t.startsWith('terminal')) return TERMINAL;
-  return GROUND;  // everything else (runway/taxiway/apron/parking/military/…) = one light ground
+  return GROUND;  // everything else (runway/taxiway/apron/…) = one light ground
 }
 
 // ── Projection: lon/lat → SVG world units (equirectangular, y flipped up) ───────
@@ -83,6 +94,13 @@ function project(lon, lat) {
   const x = (lon - CENTER.lon) * M_PER_DEG_LON * SVG_SCALE;
   const y = -(lat - CENTER.lat) * M_PER_DEG_LAT * SVG_SCALE; // SVG y grows downward
   return [x, y];
+}
+// Inverse of project(): SVG world units → lon/lat. Used by click-to-inspect so
+// clicking anywhere on the map yields the real geo-coordinate (like the 3D view).
+function unproject(x, y) {
+  const lon = x / (M_PER_DEG_LON * SVG_SCALE) + CENTER.lon;
+  const lat = -y / (M_PER_DEG_LAT * SVG_SCALE) + CENTER.lat;
+  return { lon: lon.toFixed(6), lat: lat.toFixed(6) };
 }
 
 // Precompute SVG path strings for every base polygon (static — done once).
@@ -173,54 +191,74 @@ const _RUNWAYS = hiaWays.filter((w) => w.t === 'runway');
 const RUNWAY_LINES = _RUNWAYS.map((w) => wayToPath(w.p));
 const TAXIWAY_LINES = hiaWays.filter((w) => w.t !== 'runway').map((w) => wayToPath(w.p));
 
+// ── Surrounding context lines (same shape-space as hiaWays, same projection) ────
+// These are what makes the 2D map read like the 3D scene OUTSIDE the airfield:
+//   - hiaRoads.json    : the real road network (F-Ring Road, cloverleaf
+//                        interchanges, terminal access) — carries a per-segment
+//                        width `w`, mapped to an SVG stroke width.
+//   - oldAirportWays.json : the decommissioned Doha International Airport
+//                        runways/taxiways to the west (decorative — deliberately
+//                        kept out of the routing graph, mirrors AirportGround.jsx).
+// Drawn BEHIND the live airfield network so the operational HIA always sits on top.
+const ROAD_LINES = hiaRoads.map((r) => ({ d: wayToPath(r.p), w: (r.w || 0.4) * WAYS_K }));
+const OLD_RUNWAY_LINES = oldAirportWays.filter((w) => w.t === 'runway').map((w) => wayToPath(w.p));
+const OLD_TAXIWAY_LINES = oldAirportWays.filter((w) => w.t !== 'runway').map((w) => wayToPath(w.p));
+
 // Focus extent = the airport OPERATIONAL area (runways + taxiways in SVG space),
 // NOT the full hiaBase data extent (which includes big empty western land that
 // shoved the airport small & off to one side). The default/min-zoom fits THIS,
 // so the map opens centred and tight on the airfield like the reference.
+// Includes the live airfield PLUS the surrounding context (roads + old airport)
+// so the default fit and the pan/zoom clamp let you see everything the 3D scene
+// shows outside the operational area — not just the runways/taxiways.
 const FOCUS_EXTENT = (() => {
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  for (const w of hiaWays)
-    for (const p of w.p) {
-      const [x, y] = shapeToSvg(p);
-      if (x < minX) minX = x; if (x > maxX) maxX = x;
-      if (y < minY) minY = y; if (y > maxY) maxY = y;
-    }
-  // small margin around the runways so they aren't flush to the edge
+  const eat = (p) => {
+    const [x, y] = shapeToSvg(p);
+    if (x < minX) minX = x; if (x > maxX) maxX = x;
+    if (y < minY) minY = y; if (y > maxY) maxY = y;
+  };
+  for (const w of hiaWays) for (const p of w.p) eat(p);
+  for (const w of oldAirportWays) for (const p of w.p) eat(p);
+  for (const r of hiaRoads) for (const p of r.p) eat(p);
+  // small margin so nothing is flush to the edge
   const mx = (maxX - minX) * 0.06, my = (maxY - minY) * 0.06;
   return { minX: minX - mx, minY: minY - my, maxX: maxX + mx, maxY: maxY + my };
 })();
 
-// ── High-level surrounding context (approximate OSM) ────────────────────────────
-// A "very high level" simplified backdrop so the airfield reads as sitting on the
-// Doha coast: a sea backdrop, the grey Doha mainland (simplified coastline traced
-// from OSM), a few schematic major roads, and a handful of orientation labels.
-// All authored in lon/lat and projected the same way as the airport geometry.
-// Deliberately low-fidelity — not survey-accurate — and drawn BEHIND the real
-// airport polygons/network so the detailed airfield always sits on top.
-const DOHA_MAINLAND = [
-  [51.44, 25.20], [51.44, 25.345],
-  [51.505, 25.340], [51.545, 25.318],
-  [51.556, 25.330], [51.575, 25.322], [51.566, 25.305],
-  [51.585, 25.312], [51.600, 25.300],
-  [51.612, 25.294], [51.628, 25.286], [51.640, 25.272],
-  [51.643, 25.256], [51.632, 25.240],
-  [51.618, 25.232], [51.604, 25.227],
-  [51.575, 25.212], [51.520, 25.202], [51.46, 25.20],
-];
-const CONTEXT_ROADS = [
-  [[51.470, 25.335], [51.478, 25.300], [51.492, 25.270], [51.500, 25.235], [51.510, 25.205]],
-  [[51.500, 25.310], [51.520, 25.290], [51.545, 25.278], [51.575, 25.265], [51.600, 25.255]],
-  [[51.520, 25.230], [51.560, 25.235], [51.595, 25.242], [51.618, 25.248]],
-];
+// ── Surrounding context: REAL OpenStreetMap geometry (dohaContext.json) ─────────
+// Built by adhoc/build_doha_context.py from OSM Overpass pulls (coastline, water,
+// major roads), simplified and stored as raw lon/lat so it projects identically to
+// the airport geometry. Replaces the earlier hand-traced low-fidelity backdrop.
+//   - land:    mainland polygon (coastline closed off along the map's west edge)
+//   - islands: closed coastline rings (land in the sea)
+//   - water:   natural=water polygons (lagoons/marinas cut into the land)
+//   - roads:   motorway/trunk (mtr) + primary (pri) arterials only (simplified)
+// Drawn BEHIND the airport polygons/network so the detailed airfield sits on top.
 const CONTEXT_LABELS = [
   { lon: 51.500, lat: 25.280, text: 'DOHA', size: 12, fill: '#6b7580' },
-  { lon: 51.628, lat: 25.320, text: 'PERSIAN GULF', size: 11, fill: '#5f7f9c', italic: true },
+  { lon: 51.628, lat: 25.360, text: 'PERSIAN GULF', size: 11, fill: '#5f7f9c', italic: true },
   { lon: 51.582, lat: 25.316, text: 'Ras Abu Aboud', size: 6, fill: '#8a7a6a' },
 ];
-const MAINLAND_PATH = ringToPath(DOHA_MAINLAND);
-const ROAD = { stroke: '#e0a878', width: 1.4 };
-const SEA = '#7fa8c9';
-function lineToPath(pts) {
+const SEA = '#aad3df';   // OSM-style sea blue
+
+// Road styling per class — mirrors OSM's carto palette (motorway/trunk red-ish,
+// primary orange, secondary yellow). `w` is the base SVG stroke width (divided by
+// the live zoom scale at render time so it stays a constant on-screen thickness).
+const ROAD_STYLE = {
+  mtr: { stroke: '#e28f7a', w: 2.2 },
+  pri: { stroke: '#efb36b', w: 1.7 },
+};
+
+function lonLatRingToPath(ring) {
+  return ring
+    .map((c, i) => {
+      const [x, y] = project(c[0], c[1]);
+      return `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(' ') + ' Z';
+}
+function lonLatLineToPath(pts) {
   return pts
     .map((c, i) => {
       const [x, y] = project(c[0], c[1]);
@@ -228,15 +266,23 @@ function lineToPath(pts) {
     })
     .join(' ');
 }
-const CONTEXT_ROAD_PATHS = CONTEXT_ROADS.map(lineToPath);
+// Precompute all context SVG paths once (static data).
+const LAND_PATH = lonLatRingToPath(dohaContext.land);
+const ISLAND_PATHS = dohaContext.islands.map(lonLatRingToPath);
+const WATER_PATHS = dohaContext.water.map(lonLatRingToPath);
+// Group roads by class so each class draws in one <g> with its own stroke.
+const CONTEXT_ROADS_BY_CLASS = ['mtr', 'pri'].map((cls) => ({
+  cls,
+  paths: dohaContext.roads.filter((r) => r.c === cls).map((r) => lonLatLineToPath(r.p)),
+}));
 
-// The context (mainland + labels) spans well beyond the airfield; a big sea rect
-// behind everything covers the viewport at any zoom. Sized around both the focus
-// extent and the mainland polygon so it never runs out.
+// The context spans well beyond the airfield; a big sea rect behind everything
+// covers the viewport at any zoom. Sized around both the focus extent and the
+// real land polygon so it never runs out.
 const CONTEXT_EXTENT = (() => {
   let minX = FOCUS_EXTENT.minX, minY = FOCUS_EXTENT.minY,
       maxX = FOCUS_EXTENT.maxX, maxY = FOCUS_EXTENT.maxY;
-  for (const c of DOHA_MAINLAND) {
+  for (const c of dohaContext.land) {
     const [x, y] = project(c[0], c[1]);
     if (x < minX) minX = x; if (x > maxX) maxX = x;
     if (y < minY) minY = y; if (y > maxY) maxY = y;
@@ -556,6 +602,7 @@ function Radar2DInner() {
   const flights = useSimStore((s) => s.flights);
   const selectedEntity = useSimStore((s) => s.selectedEntity);
   const setSelectedEntity = useSimStore((s) => s.setSelectedEntity);
+  const setMapClickCoord = useSimStore((s) => s.setMapClickCoord);
   const simTime = useSimStore((s) => s.simTime);
   const sensorReadings = useSimStore((s) => s.sensorReadings);
 
@@ -681,10 +728,18 @@ function Radar2DInner() {
     drag.current = null;
     setDragging(false);
   };
-  // Background click clears the selection — but NOT the click that ends a pan.
-  const onBackgroundClick = () => {
+  // Background click clears the selection AND reports the clicked geo-coordinate
+  // (like the 3D scene's ground click) — but NOT the click that ends a pan.
+  const onBackgroundClick = (e) => {
     if (justDragged.current) { justDragged.current = false; return; }
     setSelectedEntity(null);
+    // screen px → world units (undo the view transform) → lon/lat
+    const rect = svgRef.current?.getBoundingClientRect();
+    if (rect) {
+      const wx = (e.clientX - rect.left - view.tx) / view.scale;
+      const wy = (e.clientY - rect.top - view.ty) / view.scale;
+      setMapClickCoord(unproject(wx, wy));
+    }
   };
   const onWheel = useCallback((e) => {
     e.preventDefault();
@@ -753,18 +808,31 @@ function Radar2DInner() {
               {TERMINAL_CLIP_PATHS.map((d, i) => <path key={i} d={d} />)}
             </clipPath>
           </defs>
-          {/* ── high-level surrounding context (behind the airfield) ── */}
+          {/* ── surrounding context from real OSM (behind the airfield) ── */}
           {/* sea backdrop — fills the viewport at any zoom */}
           <rect x={SEA_RECT.x} y={SEA_RECT.y} width={SEA_RECT.w} height={SEA_RECT.h}
                 fill={SEA} />
-          {/* simplified Doha mainland (grey landmass on the coast) */}
-          <path d={MAINLAND_PATH} fill={GROUND.fill} stroke="#b8c3ce"
+          {/* Doha mainland (real OSM coastline, closed to a filled landmass) */}
+          <path d={LAND_PATH} fill={GROUND.fill} stroke="#b8c3ce"
                 strokeWidth={0.8 / view.scale} />
-          {/* schematic major roads */}
-          <g fill="none" stroke={ROAD.stroke} strokeLinecap="round"
-             strokeWidth={ROAD.width / view.scale}>
-            {CONTEXT_ROAD_PATHS.map((d, i) => <path key={i} d={d} />)}
-          </g>
+          {/* islands in the sea (closed coastline rings) */}
+          {ISLAND_PATHS.map((d, i) => (
+            <path key={i} d={d} fill={GROUND.fill} stroke="#b8c3ce"
+                  strokeWidth={0.6 / view.scale} />
+          ))}
+          {/* inland water bodies (lagoons/marinas cut into the land) */}
+          {WATER_PATHS.map((d, i) => (
+            <path key={i} d={d} fill={SEA} stroke="#8fbccb" strokeWidth={0.4 / view.scale} />
+          ))}
+          {/* real OSM major roads, coloured by class (motorway/trunk → primary →
+              secondary), each width kept constant on-screen via /view.scale */}
+          {CONTEXT_ROADS_BY_CLASS.map(({ cls, paths }) => (
+            <g key={cls} fill="none" stroke={ROAD_STYLE[cls].stroke}
+               strokeLinecap="round" strokeLinejoin="round"
+               strokeWidth={ROAD_STYLE[cls].w / view.scale}>
+              {paths.map((d, i) => <path key={i} d={d} />)}
+            </g>
+          ))}
           {/* base airport geometry (surface polygons) */}
           {BASE_PATHS.map((p, i) => (
             <path key={i} d={p.d} fill={p.style.fill} stroke={p.style.stroke}
@@ -822,6 +890,24 @@ function Radar2DInner() {
               </>
             );
           })()}
+          {/* surrounding roads (F-Ring Road, interchanges, terminal access) —
+              real hiaRoads.json geometry, same shape-space as the airfield. Drawn
+              here (behind the airfield network) so the operational HIA sits on top. */}
+          <g fill="none" stroke="#b0942e" strokeOpacity={0.55} strokeLinecap="round" strokeLinejoin="round">
+            {ROAD_LINES.map((r, i) => (
+              <path key={i} d={r.d} strokeWidth={Math.max(r.w, 0.12)} />
+            ))}
+          </g>
+          {/* decommissioned old Doha airport runways/taxiways to the west
+              (decorative context — mirrors the 3D scene's oldAirportWays render) */}
+          <g fill="none" stroke="#9aa4b0" strokeOpacity={0.5} strokeLinecap="round" strokeLinejoin="round">
+            {OLD_TAXIWAY_LINES.map((d, i) => (
+              <path key={i} d={d} strokeWidth={(2.3 / 3) * WAYS_K} />
+            ))}
+            {OLD_RUNWAY_LINES.map((d, i) => (
+              <path key={i} d={d} strokeWidth={RWY_W * 0.7} stroke="#8a94a0" />
+            ))}
+          </g>
           {/* taxiway network — thin darker lines on the light ground.
               Width is 1/3 of the earlier size (was 2.3·K) so the gate lead-in
               fingers read as slender lines, not thick bars. */}
@@ -946,12 +1032,21 @@ function Radar2DInner() {
         )}
       </div>
 
-      {/* hint */}
+      {/* clicked-coordinate readout (mirrors the 3D scene's CoordDisplay) +
+          usage hint, stacked bottom-centre (bottom-left holds the layer switcher) */}
       <div style={{
-        position: 'absolute', bottom: 14, left: 14, fontSize: 10, color: '#6070a0',
-        background: 'rgba(10,16,28,0.7)', borderRadius: 6, padding: '4px 10px', pointerEvents: 'none',
+        position: 'absolute', bottom: 14, left: '50%', transform: 'translateX(-50%)',
+        display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, pointerEvents: 'none',
       }}>
-        drag to pan · scroll or slider to zoom · click a plane to select
+        <div style={{ pointerEvents: 'auto' }}>
+          <CoordDisplay />
+        </div>
+        <div style={{
+          fontSize: 10, color: '#6070a0', background: 'rgba(10,16,28,0.7)',
+          borderRadius: 6, padding: '4px 10px', pointerEvents: 'none',
+        }}>
+          drag to pan · scroll or slider to zoom · click a plane to select · click map for coords
+        </div>
       </div>
     </div>
   );

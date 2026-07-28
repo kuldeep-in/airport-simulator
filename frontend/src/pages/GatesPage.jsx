@@ -40,7 +40,11 @@ function fmtDuration(ms) {
 }
 
 function GateRow({ gate, now, expanded, onToggle }) {
-  const isOccupied = gate.status === 'OCCUPIED';
+  // `current` and `history` can be absent on a gate (e.g. an available gate, or a
+  // gate synthesised from GATE_POSITIONS with only {id,status}). Treat "occupied"
+  // as requiring an actual `current` record, and default history to [].
+  const history = gate.history ?? [];
+  const isOccupied = gate.status === 'OCCUPIED' && gate.current != null;
   const color = STATUS_COLOR[gate.status] ?? '#6070a0';
   const sinceMs = gate.current?.occupied_from ? new Date(gate.current.occupied_from).getTime() : null;
 
@@ -79,18 +83,18 @@ function GateRow({ gate, now, expanded, onToggle }) {
           )}
         </div>
         <div className="muted" style={{ fontSize: 11 }}>
-          {gate.history.length} past stay{gate.history.length === 1 ? '' : 's'}
+          {history.length} past stay{history.length === 1 ? '' : 's'}
         </div>
       </div>
 
       {expanded && (
         <div style={{ marginTop: 10, borderTop: '1px solid var(--border)', paddingTop: 10 }}>
-          {gate.history.length === 0 && (
+          {history.length === 0 && (
             <div className="muted" style={{ fontSize: 11 }}>
               No past occupancy recorded yet this session.
             </div>
           )}
-          {gate.history.map((h, i) => (
+          {history.map((h, i) => (
             <div
               key={`${h.flight_id}-${h.occupied_from}-${i}`}
               style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '4px 0', fontSize: 11, flexWrap: 'wrap' }}

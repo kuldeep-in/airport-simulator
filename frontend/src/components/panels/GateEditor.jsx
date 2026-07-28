@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import { useSimStore } from '../../store/useSimStore';
 import { GATE_LONLAT, GATE_DIRS } from '../../data/gateData.js';
@@ -24,6 +24,10 @@ function fmt6(n) {
 export default function GateEditor({ onClose }) {
   const [selected, setSelected] = useState('C1');
   const [copied, setCopied] = useState(false);
+  // Track the "Copied!" reset timer so it can be cleared on unmount (avoids a
+  // setState-after-unmount warning if the panel closes within the 2s window).
+  const copyTimer = useRef(null);
+  useEffect(() => () => clearTimeout(copyTimer.current), []);
 
   const gateEdits       = useSimStore((s) => s.gateEdits);
   const setGateEdit     = useSimStore((s) => s.setGateEdit);
@@ -87,7 +91,8 @@ export default function GateEditor({ onClose }) {
 
     navigator.clipboard.writeText(out).then(() => {
       setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      clearTimeout(copyTimer.current);
+      copyTimer.current = setTimeout(() => setCopied(false), 2000);
     });
   }
 

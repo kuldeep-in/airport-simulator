@@ -1,17 +1,24 @@
-import { useEffect, useRef } from 'react';
+import { useEffect } from 'react';
 import { useSimStore } from '../store/useSimStore';
 
 /**
  * Connect to the backend WebSocket, dispatch messages into the store, and
  * auto-reconnect with exponential backoff (capped at 10s).
+ *
+ * All connection state (the socket, backoff, the reconnect timer, and the
+ * "cancelled" flag) is scoped to a SINGLE effect run via closure locals — NOT
+ * component-lifetime refs. Under React StrictMode the effect mounts, unmounts,
+ * then mounts again; with shared refs the first run's socket `onclose` could fire
+ * after the second run reset a shared flag, scheduling a stray reconnect →
+ * 2-3 duplicate sockets + orphaned timers. Closure-local state keeps each run's
+ * lifecycle fully independent, and cleanup detaches handlers + clears the timer.
  */
 export function useWebSocket() {
-  const wsRef = useRef(null);
-  const backoffRef = useRef(500);
-  const closedRef = useRef(false);
-
   useEffect(() => {
-    closedRef.current = false;
+    let cancelled = false;      // set on cleanup; stops this run reconnecting
+    let ws = null;
+    let backoff = 500;
+    let reconnectTimer = null;
 
     const {
       setWsConnected,
@@ -24,14 +31,13 @@ export function useWebSocket() {
     } = useSimStore.getState();
 
     const connect = () => {
-      if (closedRef.current) return;
+      if (cancelled) return;
       const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
       const url = `${proto}://${window.location.host}/ws`;
-      const ws = new WebSocket(url);
-      wsRef.current = ws;
+      ws = new WebSocket(url);
 
       ws.onopen = () => {
-        backoffRef.current = 500;
+        backoff = 500;
         setWsConnected(true);
       };
 
@@ -72,10 +78,10 @@ export function useWebSocket() {
 
       ws.onclose = () => {
         setWsConnected(false);
-        if (closedRef.current) return;
-        const delay = Math.min(backoffRef.current, 10000);
-        backoffRef.current = Math.min(backoffRef.current * 2, 10000);
-        setTimeout(connect, delay);
+        if (cancelled) return;
+        const delay = Math.min(backoff, 10000);
+        backoff = Math.min(backoff * 2, 10000);
+        reconnectTimer = setTimeout(connect, delay);
       };
 
       ws.onerror = () => {
@@ -86,8 +92,14 @@ export function useWebSocket() {
     connect();
 
     return () => {
-      closedRef.current = true;
-      if (wsRef.current) wsRef.current.close();
+      cancelled = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (ws) {
+        // Detach handlers first so this (now-stale) socket's onclose can't
+        // schedule a reconnect after we've torn the run down.
+        ws.onopen = ws.onmessage = ws.onerror = ws.onclose = null;
+        ws.close();
+      }
     };
   }, []);
 }

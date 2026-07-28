@@ -162,12 +162,21 @@ if FRONTEND_DIST.exists():
     async def serve_index():
         return FileResponse(str(FRONTEND_DIST / "index.html"))
 
+    _DIST_ROOT = FRONTEND_DIST.resolve()
+
     @app.get("/{full_path:path}")
     async def serve_spa(full_path: str):
         if full_path.startswith("api/") or full_path.startswith("ws"):
             return JSONResponse({"error": "not found"}, status_code=404)
-        candidate = FRONTEND_DIST / full_path
-        if candidate.exists() and candidate.is_file():
+        # Resolve the candidate and confirm it stays INSIDE the dist root before
+        # serving — otherwise a path like "../server/config.py" would escape the
+        # frontend directory and leak backend source. Any escape / non-file falls
+        # through to the SPA index.html (client-side routing handles unknown paths).
+        candidate = (FRONTEND_DIST / full_path).resolve()
+        if (
+            candidate.is_file()
+            and (candidate == _DIST_ROOT or _DIST_ROOT in candidate.parents)
+        ):
             return FileResponse(str(candidate))
         return FileResponse(str(FRONTEND_DIST / "index.html"))
 else:

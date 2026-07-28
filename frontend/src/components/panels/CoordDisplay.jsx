@@ -1,15 +1,20 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useSimStore } from '../../store/useSimStore';
 
 export default function CoordDisplay() {
   const coord = useSimStore((s) => s.mapClickCoord);
   const [copied, setCopied] = useState(false);
+  // Track the "Copied!" reset timer so it can be cleared if the component
+  // unmounts before it fires (avoids a setState-after-unmount warning).
+  const copyTimer = useRef(null);
+  useEffect(() => () => clearTimeout(copyTimer.current), []);
 
   function handleCopy() {
     if (!coord) return;
     navigator.clipboard.writeText(`[${coord.lon}, ${coord.lat}]`).then(() => {
       setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
+      clearTimeout(copyTimer.current);
+      copyTimer.current = setTimeout(() => setCopied(false), 1500);
     });
   }
 

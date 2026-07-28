@@ -18,5 +18,10 @@ npm-debug.log*
 
 # Internal dev notes (not for public repo)
 CLAUDE.md
+REVIEW.md
+
+# Raw OSM Overpass scratch dumps (inputs to adhoc/build_doha_context.py;
+# regenerable — the built output frontend/src/data/dohaContext.json is committed)
+adhoc/osm_*.json
 
 # Keep frontend/dist for deployment - do NOT ignore it
