@@ -1,0 +1,114 @@
+{
+  "3T": {
+    "file": "/airline-logos/3T.png",
+    "name": "Tarco Aviation"
+  },
+  "6E": {
+    "file": "/airline-logos/6E.png",
+    "name": "IndiGo"
+  },
+  "AT": {
+    "file": "/airline-logos/AT.png",
+    "name": "Royal Air Maroc"
+  },
+  "BS": {
+    "file": "/airline-logos/BS.png",
+    "name": "US-Bangla Airlines"
+  },
+  "EK": {
+    "file": "/airline-logos/EK.png",
+    "name": "Emirates"
+  },
+  "EY": {
+    "file": "/airline-logos/EY.png",
+    "name": "Etihad Airways"
+  },
+  "FZ": {
+    "file": "/airline-logos/FZ.png",
+    "name": "flydubai"
+  },
+  "G9": {
+    "file": "/airline-logos/G9.png",
+    "name": "Air Arabia"
+  },
+  "GF": {
+    "file": "/airline-logos/GF.png",
+    "name": "Gulf Air"
+  },
+  "IX": {
+    "file": "/airline-logos/IX.png",
+    "name": "Air India Express"
+  },
+  "KU": {
+    "file": "/airline-logos/KU.png",
+    "name": "Kuwait Airways"
+  },
+  "ME": {
+    "file": "/airline-logos/ME.png",
+    "name": "Middle East Airlines"
+  },
+  "MH": {
+    "file": "/airline-logos/MH.png",
+    "name": "Malaysia Airlines"
+  },
+  "MS": {
+    "file": "/airline-logos/MS.png",
+    "name": "EgyptAir"
+  },
+  "PC": {
+    "file": "/airline-logos/PC.png",
+    "name": "Pegasus Airlines"
+  },
+  "PR": {
+    "file": "/airline-logos/PR.png",
+    "name": "Philippine Airlines"
+  },
+  "QP": {
+    "file": "/airline-logos/QP.png",
+    "name": "Akasa Air"
+  },
+  "QR": {
+    "file": "/airline-logos/QR.png",
+    "name": "Qatar Airways"
+  },
+  "RA": {
+    "file": "/airline-logos/RA.png",
+    "name": "Nepal Airlines"
+  },
+  "RJ": {
+    "file": "/airline-logos/RJ.png",
+    "name": "Royal Jordanian"
+  },
+  "RQ": {
+    "file": "/airline-logos/RQ.png",
+    "name": "Kam Air"
+  },
+  "SV": {
+    "file": "/airline-logos/SV.png",
+    "name": "Saudia"
+  },
+  "TK": {
+    "file": "/airline-logos/TK.png",
+    "name": "Turkish Airlines"
+  },
+  "UL": {
+    "file": "/airline-logos/UL.png",
+    "name": "SriLankan Airlines"
+  },
+  "VA": {
+    "file": "/airline-logos/VA.png",
+    "name": "Virgin Australia"
+  },
+  "WB": {
+    "file": "/airline-logos/WB.png",
+    "name": "RwandAir"
+  },
+  "WY": {
+    "file": "/airline-logos/WY.png",
+    "name": "Oman Air"
+  },
+  "XY": {
+    "file": "/airline-logos/XY.png",
+    "name": "flynas"
+  }
+}

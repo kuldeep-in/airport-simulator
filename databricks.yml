@@ -1,0 +1,17 @@
+bundle:
+  name: airport-simulator
+
+targets:
+  dev:
+    mode: development
+    default: true
+    workspace:
+      host: https://adb-0000000000000000.0.azuredatabricks.net
+      profile: fevm01
+
+resources:
+  apps:
+    airport-simulator:
+      name: airport-simulator
+      description: Hamad International Airport Real-Time Simulator
+      source_code_path: /Workspace/Users/you@example.com/airport-simulator

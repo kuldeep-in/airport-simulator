@@ -1,0 +1,27 @@
+command:
+  - "python"
+  - "-m"
+  - "uvicorn"
+  - "app:app"
+  - "--host"
+  - "0.0.0.0"
+  - "--port"
+  - "8000"
+
+env:
+  - name: PGHOST
+    value: "{{secrets/airport-sim/lakebase-host}}"
+  - name: PGDATABASE
+    value: "{{secrets/airport-sim/lakebase-db}}"
+  - name: PGUSER
+    value: "{{secrets/airport-sim/lakebase-user}}"
+  - name: PGPASSWORD
+    value: "{{secrets/airport-sim/lakebase-password}}"
+  - name: PGPORT
+    value: "5432"
+
+resources:
+  - name: airport-simulator-db
+    database:
+      instance: airport-simulator-db
+      permission: CAN_CONNECT_AND_CREATE
