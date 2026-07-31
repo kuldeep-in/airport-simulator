@@ -20,6 +20,7 @@ from server.simulator import connections
 from server.simulator import gates
 from server.simulator import live_schedule
 from server.simulator import flight_store
+from server.simulator import analytics
 from server.simulator.seed import seed_if_empty
 
 _bg_task = None
@@ -114,6 +115,14 @@ async def get_movements():
     flight_schedule dataset (real history, not just the live board window). Used
     by the Dashboard's 'Movements per hour' chart."""
     return {"movements": await flight_store.movements_per_hour(broadcaster.SIM["sim_time"], 12)}
+
+
+@app.get("/api/analytics")
+async def get_analytics():
+    """Historical analytics rollups over the flight_schedule dataset (delay-by-hour,
+    delay distribution, on-time trend, gate×hour heatmap, top routes, airline share)
+    for the Operations Dashboard. Anchored on the current sim clock."""
+    return await analytics.dashboard_analytics(broadcaster.SIM["sim_time"])
 
 
 # Arrivals and departures auto-activate at their real scheduled times from the

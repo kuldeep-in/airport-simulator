@@ -51,20 +51,30 @@ wrongly freeze traffic taxiing past an occupied terminal.
 
 import math
 
-# Comfortable following / crossing separation (centre-to-centre). ~90 m clears a
-# wide-body's ~70 m length nose-to-tail and reads as real spacing in a queue.
-SEP_M = 90.0
+# Comfortable following / crossing separation (centre-to-centre). 60 m gives a
+# tighter, more realistic taxi-queue spacing while still reading as distinct
+# aircraft (a wide-body is ~70 m but queued jets sit closer than a full length in
+# real life). Was 90 m — reduced per request for a denser-looking queue.
+SEP_M = 60.0
 # Hard anti-overlap minimum enforced against every flight ahead (see module doc).
-HARD_M = 45.0
+# 30 m still clears a narrow-body (~38 m) enough to avoid visual overlap.
+HARD_M = 30.0
 # Sample step (m) when sweeping a flight's proposed advance for conflicts.
 _SWEEP_M = 15.0
-# Anti-deadlock: on a genuine single-lane HEAD-ON, holding both flights forever is
-# a permanent freeze (worse than the old occasional clip). If a flight is blocked
-# purely by an OPPOSING (head-on) flight for this many consecutive ticks, it
-# breaks through this tick — accepting a transient close pass so traffic always
-# eventually flows. Same-direction following NEVER triggers this (holding behind a
-# stopped leader is correct), so a queue still waits properly.
+# Anti-deadlock: on a genuine single-lane HEAD-ON or CROSSING conflict, holding
+# both flights forever is a permanent freeze (worse than the old occasional clip).
+# If a flight is blocked purely by a CONFLICTING (non-following) flight for this
+# many consecutive ticks, it breaks through this tick — accepting a transient close
+# pass so traffic always eventually flows. Same-direction FOLLOWING never triggers
+# this (holding behind a stopped leader is correct), so a queue still waits properly.
 _HEADON_STALL_TICKS = 8
+# Heading-difference (deg) above which two flights count as a CONFLICT (head-on or
+# crossing) rather than same-direction following — used both to decide when the
+# break-through applies and which blocks accumulate the stall counter. A pure
+# 2-body crossing deadlock (e.g. two departures meeting at ~115°) sat in the old
+# >120° "opposing only" gap and could freeze forever; 60° captures any genuine
+# crossing while still treating a near-parallel follower (<60°) as a queue.
+_CONFLICT_DEG = 60.0
 
 # fid -> (lat, lon, kind, heading_deg) registered this tick (phase 1 current,
 # updated to the committed position by each phase-2 step()).
@@ -144,11 +154,12 @@ def _forward_offset(lat, lon, hdg, olat, olon):
 def _clear_at(fid, lat, lon, hdg, ignore_headon=False):
     """Check candidate point (lat,lon,hdg) against every other registered flight.
 
-    Returns (ok, blocked_by_headon):
+    Returns (ok, blocked_by_conflict):
       * ok               — True if the point keeps required separation.
-      * blocked_by_headon — True if the ONLY thing blocking it is an OPPOSING
-        (head-on, heading diff > 120°) flight. Same-direction/crossing blocks set
-        this False. Drives the anti-deadlock break-through in step().
+      * blocked_by_conflict — True if the ONLY thing blocking it is a CONFLICTING
+        (head-on OR crossing — heading diff > _CONFLICT_DEG) flight. Same-direction
+        following blocks set this False. Drives the anti-deadlock break-through in
+        step().
 
     Required gap depends on priority:
       * vs a flight ALREADY ADVANCED this tick (higher priority, in `_committed`):
@@ -156,27 +167,27 @@ def _clear_at(fid, lat, lon, hdg, ignore_headon=False):
       * vs a NOT-yet-advanced flight (lower priority): only the HARD_M anti-overlap
         floor, and only if it's ahead/abeam.
 
-    `ignore_headon=True` drops opposing-flight constraints entirely (the
-    break-through path) so a stalled flight can pass a head-on."""
-    only_headon = True
+    `ignore_headon=True` drops conflicting-flight constraints entirely (the
+    break-through path) so a stalled flight can pass a head-on/crossing lock."""
+    only_conflict = True
     ok = True
     for other, (olat, olon, _ok, ohdg) in _positions.items():
         if other == fid:
             continue
         fwd = _forward_offset(lat, lon, hdg, olat, olon)
         dist = _haversine_m((lat, lon), (olat, olon))
-        opposing = abs((hdg - ohdg + 180) % 360 - 180) > 120
-        if opposing and ignore_headon:
-            continue  # break-through: don't let a head-on flight block me
+        conflict = abs((hdg - ohdg + 180) % 360 - 180) > _CONFLICT_DEG
+        if conflict and ignore_headon:
+            continue  # break-through: don't let a head-on/crossing flight block me
         if other in _committed:
             violated = (fwd >= -1.0 and dist < SEP_M) or (-SEP_M <= fwd < -1.0 and dist < HARD_M)
         else:
             violated = fwd >= -1.0 and dist < HARD_M
         if violated:
             ok = False
-            if not opposing:
-                only_headon = False  # a non-head-on block => don't break through
-    return ok, (not ok and only_headon)
+            if not conflict:
+                only_conflict = False  # a same-direction following block => don't break through
+    return ok, (not ok and only_conflict)
 
 
 def step(fid, path, cum, cur, proposed, kind, enforce=True) -> float:
@@ -193,9 +204,9 @@ def step(fid, path, cum, cur, proposed, kind, enforce=True) -> float:
         committed = proposed
         _headon_stall.pop(fid, None)
     else:
-        # If this flight has been stalled purely by a head-on for too many ticks,
-        # break through this tick (ignore opposing flights) so a single-lane
-        # head-on can never freeze traffic permanently.
+        # If this flight has been stalled purely by a head-on/crossing conflict for
+        # too many ticks, break through this tick (ignore conflicting flights) so a
+        # 2-body head-on or crossing lock can never freeze traffic permanently.
         breakthrough = _headon_stall.get(fid, 0) >= _HEADON_STALL_TICKS
         committed = cur
         n = max(1, int((proposed - cur) / _SWEEP_M))

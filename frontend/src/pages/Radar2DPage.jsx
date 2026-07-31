@@ -627,16 +627,29 @@ function Radar2DInner() {
   // fit-to-view scale is ALSO the minimum zoom — you can't zoom out further, so
   // the airport always fills the viewport (no vast empty margins around it).
   const pad = 40;
-  const initialView = useMemo(() => {
+  // How much further than fit-to-view you can zoom in. Bumped 12 → 18 to allow one
+  // more zoom-in level.
+  const ZOOM_RANGE = 18;
+  // Fit-to-view scale + airfield centre (the furthest you can zoom out).
+  const fitInfo = useMemo(() => {
     const ew = VIEW_EXTENT.maxX - VIEW_EXTENT.minX;
     const eh = VIEW_EXTENT.maxY - VIEW_EXTENT.minY;
-    const scale = Math.min((size.w - pad * 2) / ew, (size.h - pad * 2) / eh);
+    const fitScale = Math.min((size.w - pad * 2) / ew, (size.h - pad * 2) / eh);
     const cx = (VIEW_EXTENT.minX + VIEW_EXTENT.maxX) / 2;
     const cy = (VIEW_EXTENT.minY + VIEW_EXTENT.maxY) / 2;
-    return { scale, tx: size.w / 2 - cx * scale, ty: size.h / 2 - cy * scale };
+    return { fitScale, cx, cy };
   }, [size]);
-  const MIN_SCALE = initialView.scale;   // fit-to-view = furthest you can zoom out
-  const MAX_SCALE = MIN_SCALE * 12;       // cap zoom-in relative to the fit
+  const MIN_SCALE = fitInfo.fitScale;          // fit-to-view = furthest you can zoom out
+  const MAX_SCALE = MIN_SCALE * ZOOM_RANGE;    // cap zoom-in relative to the fit
+  // The view opens at the MIDDLE of the (log-scale) zoom slider — the geometric
+  // mean of MIN/MAX lands the slider knob at exactly 0.5, giving equal zoom room
+  // in and out from the default. (Was MIN_SCALE, i.e. slider pinned at the bottom.)
+  const DEFAULT_SCALE = MIN_SCALE * Math.sqrt(ZOOM_RANGE);
+  const initialView = useMemo(() => {
+    const { cx, cy } = fitInfo;
+    const scale = DEFAULT_SCALE;
+    return { scale, tx: size.w / 2 - cx * scale, ty: size.h / 2 - cy * scale };
+  }, [size, fitInfo, DEFAULT_SCALE]);
 
   // Clamp a {scale,tx,ty} view so the airport can never be dragged into empty
   // space. Per axis: if the extent is SMALLER than the viewport (true at the
@@ -1113,7 +1126,7 @@ function FlightBoard({ posList, flights, selectedId, onSelect }) {
       }}>
       <span style={{ fontWeight: 700, fontSize: 11, color: '#e8edf4', width: 46 }}>{f.callsign}</span>
       <span style={{ fontSize: 9.5, color: '#e8edf4', fontFamily: 'monospace', width: 32 }}>{_fmtSched(f.schedIso) || '—'}</span>
-      <span style={{ fontSize: 10, color: '#93a3b8', width: 30 }}>{f.assigned_gate ? `G${f.assigned_gate}` : '—'}</span>
+      <span style={{ fontSize: 10, color: '#93a3b8', width: 30 }}>{f.assigned_gate || '—'}</span>
       <span style={{ fontSize: 8, color: _PHASE_COLOR[f.phase] || '#6070a0', fontWeight: 600, letterSpacing: 0.3, whiteSpace: 'nowrap', marginLeft: 'auto' }}>
         {_PHASE_LABEL[f.phase] || f.phase}
       </span>

@@ -141,9 +141,22 @@ function InboundRow({ flight, now, connections, expanded, onToggle }) {
   // once in seed_runner.advance()), with no countdown suffix since it's
   // already happened.
   const isParked = flight.phase === 'PARKED';
-  const eta = isParked
-    ? { clock: flight.gate_arrival ? fmtClock(flight.gate_arrival) : '—', minutesLabel: null }
-    : fmtScheduled(arrivalEtaIso(flight), now);
+  const hasLanded = !!flight.phase;  // ARRIVING or PARKED — it has touched down
+  let eta;
+  if (isParked) {
+    // Parked: the real time it reached the gate, no countdown.
+    eta = { clock: flight.gate_arrival ? fmtClock(flight.gate_arrival) : '—', minutesLabel: null };
+  } else if (hasLanded) {
+    // Landed and taxiing in: show the (already-past) TOUCHDOWN time with NO
+    // future countdown. Otherwise the row reads "LANDED" next to a future
+    // gate-arrival estimate (touchdown+5min) — the inconsistency that looks
+    // like the plane landed before its arrival time.
+    eta = { clock: flight.scheduled_arr ? fmtClock(flight.scheduled_arr) : '—', minutesLabel: null };
+  } else {
+    // Still approaching (SCHEDULED, not yet on the map): estimated gate arrival
+    // (touchdown + 5 min) plus a countdown.
+    eta = fmtScheduled(arrivalEtaIso(flight), now);
+  }
 
   // Once an arrival is on the map (it has a sim phase — ARRIVING/PARKED — i.e. it
   // has "touched down"), show it as LANDED regardless of the raw AeroDataBox

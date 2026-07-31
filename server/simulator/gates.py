@@ -142,15 +142,24 @@ def _occupy(gate_id: str, flight_id: str, now: datetime) -> str:
     return gate_id
 
 
-def release_gate(gate_id: str | None, now: datetime) -> None:
+def release_gate(gate_id: str | None, now: datetime, flight_id: str | None = None) -> None:
+    """Free `gate_id`. If `flight_id` is given, the release is OWNER-GUARDED: it's
+    a no-op unless that flight is the gate's current occupant. This prevents a
+    flight that holds a STALE `assigned_gate` value (e.g. from a prior assignment)
+    from evicting a DIFFERENT flight that legitimately occupies the same gate now —
+    the cause of two arrivals appearing on one stand. Mirrors runway.release()'s
+    owner check. Callers that genuinely want an unconditional free (none today)
+    can omit flight_id."""
     if not gate_id or gate_id not in _gate_status:
         return
-    flight_id = _occupied_by.pop(gate_id, None)
+    if flight_id is not None and _occupied_by.get(gate_id) != flight_id:
+        return  # this flight isn't the current occupant — don't evict whoever is
+    occupant = _occupied_by.pop(gate_id, None)
     since = _occupied_since.pop(gate_id, None)
-    if flight_id and since:
+    if occupant and since:
         _history.append({
             "gate_id": gate_id,
-            "flight_id": flight_id,
+            "flight_id": occupant,
             "occupied_from": since.isoformat(),
             "occupied_until": now.isoformat(),
         })

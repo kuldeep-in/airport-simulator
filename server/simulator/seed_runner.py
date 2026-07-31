@@ -308,7 +308,7 @@ async def refresh_roster(new_arrivals: list[dict], now: datetime) -> list[str]:
 async def _revert_arrival_to_scheduled(fid: str, row: dict, now: datetime) -> None:
     """Undo an early activation: release its gate + arrival-runway lock, clear
     its live DB rows, and reset it to SCHEDULED at the fresh (delayed) time."""
-    gates.release_gate(_roster[fid].get("assigned_gate"), now)
+    gates.release_gate(_roster[fid].get("assigned_gate"), now, fid)
     runway.arr_release(fid)
     await db.execute("DELETE FROM live_positions WHERE flight_id=$1", fid)
     _roster[fid]["assigned_gate"] = None
@@ -470,7 +470,7 @@ def _assign_gate_and_route(fid: str, now: datetime) -> None:
     assignment is decided fresh every (re)start. `now` (sim time) is passed
     straight through to gates.py for its occupancy history log."""
     meta = _roster[fid]
-    gates.release_gate(meta.get("assigned_gate"), now)
+    gates.release_gate(meta.get("assigned_gate"), now, fid)
     gate_id = gates.reserve_gate(gates.capacity_class_of(meta["aircraft_type"]), fid, now)
     meta["assigned_gate"] = gate_id
     if gate_id is None:
@@ -700,7 +700,7 @@ async def _finish_arrival(fid: str, now: datetime) -> dict:
     depart taxi, no outgoing flight) and its gate is released back to the
     live registry."""
     meta = _roster[fid]
-    gates.release_gate(meta.get("assigned_gate"), now)
+    gates.release_gate(meta.get("assigned_gate"), now, fid)
     runway.arr_release(fid)  # defensive — normally released at the runway exit already
     await db.execute("DELETE FROM live_positions WHERE flight_id=$1", fid)
     return {"id": fid, "callsign": meta["callsign"], "phase": "INACTIVE", "source": "lakebase"}

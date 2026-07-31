@@ -32,6 +32,7 @@ happening now is live" principle already used for arrivals:
 import json
 import math
 import os
+import random
 from datetime import datetime
 
 from server.db import db
@@ -46,13 +47,26 @@ _GATE_LONLAT_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "data", 
 with open(_GATE_LONLAT_PATH) as _f:
     _GATE_LONLAT: dict[str, list[float]] = json.load(_f)
 
-_GATE_PARK_LEAD_SEC = 45 * 60.0  # how long before scheduled departure a flight appears parked at its gate
+# How long before scheduled departure a flight appears parked at its gate. Each
+# flight gets its OWN value, drawn once (in _add_departure) uniformly from this
+# range, so aircraft don't all pop onto their stands at an identical 45-min mark.
+# Pushback still happens at the real scheduled time regardless — this only varies
+# when the plane becomes visible at the gate.
+_GATE_PARK_LEAD_MIN_SEC = 30 * 60.0
+_GATE_PARK_LEAD_MAX_SEC = 45 * 60.0
 _TAXI_KT = 18.0        # steady taxi-out speed, matches arrivals' established taxi speed
 _GATE_CREEP_KT = 5.0   # leaving the stand (pushback)
 _CREEP_M = 60.0        # distance over which speed ramps from creep -> steady taxi
 _TAKEOFF_KT = 180.0    # takeoff-roll speed reached at the runway's far end
 KT_TO_MPS = 0.514444
-_HOLD_QUEUE_GAP_M = 90.0  # nose-to-tail spacing between departures queued behind the hold-short point (metres); matches traffic.SEP_M so queued planes don't overlap
+_HOLD_QUEUE_GAP_M = 60.0  # nose-to-tail spacing between departures queued behind the hold-short point (metres); matches traffic.SEP_M so queued planes don't overlap
+# Runway roll distance from the threshold to the ROTATION/liftoff point. The
+# single-occupant runway lock is freed here (aircraft is airborne) rather than at
+# the full ~4297 m far end — a real tower clears the next departure to roll as soon
+# as the previous one rotates. This roughly halves runway-lock occupancy time
+# (~79s → ~40s per departure), lifting one-runway throughput ~45→~60/hr. The plane
+# still keeps rolling/climbing to the far end visually; only the LOCK releases early.
+_LIFTOFF_ROLL_M = 1800.0
 
 # ── Dual-runway overflow policy ────────────────────────────────────────────────
 # 34R (east) is the primary departure runway; 34L (west) is arrivals' landing
@@ -85,6 +99,8 @@ _total_dist: dict[str, float] = {}
 _taxi_end_dist: dict[str, float] = {}  # cumulative metres where the taxiway portion ends and the runway segment begins
 _hold_dist: dict[str, float] = {}       # cumulative metres at the holding-short point (see runway.py)
 _runway_entered: dict[str, bool] = {}   # flight_id -> True once granted the runway lock for this run
+_runway_released: dict[str, bool] = {}  # flight_id -> True once the lock was freed at rotation (one-shot; the plane keeps rolling to the far end after)
+_gate_park_lead: dict[str, float] = {}  # flight_id -> this flight's own gate-appearance lead time (sec before scheduled_dep), drawn once in _add_departure
 _state: dict[str, str] = {}            # 'SCHEDULED' | 'GATE_PARKED' | 'ACTIVE' | 'DONE' | 'DEPARTED'
 _progress: dict[str, float] = {}       # metres travelled along _path
 _runway: dict[str, str] = {}           # flight_id -> assigned takeoff runway ('34R' primary, '34L' overflow); chosen once at _activate_route
@@ -231,12 +247,14 @@ async def load_roster() -> None:
     _roster.clear()
     _scheduled_dep.clear()
     _api_gate.clear()
+    _gate_park_lead.clear()
     _path.clear()
     _cum_dist.clear()
     _total_dist.clear()
     _taxi_end_dist.clear()
     _hold_dist.clear()
     _runway_entered.clear()
+    _runway_released.clear()
     _state.clear()
     _progress.clear()
     _last_heading.clear()
@@ -267,6 +285,7 @@ def _add_departure(row: dict) -> None:
     }
     _scheduled_dep[fid] = row["scheduled_utc"]
     _api_gate[fid] = row.get("assigned_gate")
+    _gate_park_lead[fid] = random.uniform(_GATE_PARK_LEAD_MIN_SEC, _GATE_PARK_LEAD_MAX_SEC)
     _state[fid] = "SCHEDULED"
     _progress[fid] = 0.0
     _path[fid] = []
@@ -275,6 +294,7 @@ def _add_departure(row: dict) -> None:
     _hold_dist[fid] = 0.0
     _taxi_end_dist[fid] = 0.0
     _runway_entered[fid] = False
+    _runway_released[fid] = False
 
 
 async def refresh_roster(new_departures: list[dict]) -> None:
@@ -317,9 +337,9 @@ async def refresh_roster(new_departures: list[dict]) -> None:
 
 def _forget_departure(fid: str) -> None:
     """Remove all per-flight state for a flight (dropped from the window)."""
-    for d in (_roster, _scheduled_dep, _api_gate, _path, _cum_dist, _total_dist,
-              _taxi_end_dist, _hold_dist, _runway_entered, _state, _progress,
-              _last_heading, _runway):
+    for d in (_roster, _scheduled_dep, _api_gate, _gate_park_lead, _path, _cum_dist,
+              _total_dist, _taxi_end_dist, _hold_dist, _runway_entered, _runway_released,
+              _state, _progress, _last_heading, _runway):
         d.pop(fid, None)
     traffic.clear(fid)
 
@@ -436,6 +456,7 @@ def _build_route_for_runway(fid: str, rwy: str) -> None:
     _hold_dist[fid] = hold_m
     _taxi_end_dist[fid] = taxi_end_m
     _runway_entered[fid] = False
+    _runway_released[fid] = False
     _progress[fid] = 0.0
 
 
@@ -506,7 +527,7 @@ def advance(sim_time: datetime, tick_sec: float, speed: int) -> None:
             # taxis out normally. (Only a genuinely full airport — every gate
             # occupied — leaves it SCHEDULED, retrying next tick; never crashes.)
             lead = (_scheduled_dep[fid] - sim_time).total_seconds()
-            if lead <= _GATE_PARK_LEAD_SEC:
+            if lead <= _gate_park_lead.get(fid, _GATE_PARK_LEAD_MAX_SEC):
                 if _activate_route(fid, sim_time):
                     _state[fid] = "GATE_PARKED"
             continue
@@ -515,6 +536,12 @@ def advance(sim_time: datetime, tick_sec: float, speed: int) -> None:
             # push back and start taxiing immediately (no separate boarding
             # hold; the flight already sat at the stand during GATE_PARKED).
             if sim_time >= _scheduled_dep[fid]:
+                # Every departure pushes back at its real scheduled time and waits
+                # in the taxi/hold queue — no pushback metering. This is safe now
+                # that the ground-traffic break-through (traffic.py) resolves the
+                # head-on/crossing conflicts that used to gridlock a fully-loaded
+                # queue: offline replay of the full feed drains all departures with
+                # a peak of ~20 concurrently taxiing and no permanent stall.
                 # Decide the takeoff runway NOW (at pushback), when 34R congestion
                 # and the arrival gap are real — not 45 min ago at gate-park. If
                 # overflow to 34L is warranted, rebuild the taxi route to it (the
@@ -522,6 +549,14 @@ def advance(sim_time: datetime, tick_sec: float, speed: int) -> None:
                 rwy = _choose_runway(fid, sim_time)
                 if rwy != _runway.get(fid, taxiway_graph.RUNWAY_34R):
                     _build_route_for_runway(fid, rwy)
+                # The aircraft physically leaves the stand at pushback, so FREE the
+                # gate in the live occupancy registry NOW — not at takeoff. (It used
+                # to stay OCCUPIED through the entire taxi-out/roll, so a gate showed
+                # occupied by a plane already taxiing away.) Owner-guarded so it only
+                # frees the stand this flight actually holds. We keep meta[
+                # "assigned_gate"] as the DISPLAY value (the board still shows which
+                # gate it departed from) — only the registry occupancy is released.
+                gates.release_gate(_roster[fid].get("assigned_gate"), sim_time, fid)
                 _state[fid] = "ACTIVE"  # pushback starts now, from progress 0
                 _progress[fid] = 0.0
             continue
@@ -588,8 +623,18 @@ def advance(sim_time: datetime, tick_sec: float, speed: int) -> None:
             elif fid not in _last_heading:
                 _last_heading[fid] = seg_heading  # first tick, before any motion
 
-            if _progress[fid] >= total:
+            # Free the runway lock at ROTATION (threshold + _LIFTOFF_ROLL_M), one
+            # time, so the next queued departure can start its roll while this one
+            # climbs out — the actual throughput fix. The plane stays ACTIVE and
+            # keeps rolling to the far end below.
+            if (_runway_entered.get(fid, False)
+                    and not _runway_released.get(fid, False)
+                    and _progress[fid] >= _taxi_end_dist.get(fid, 0.0) + _LIFTOFF_ROLL_M):
                 _rwy_release(fid)
+                _runway_released[fid] = True
+
+            if _progress[fid] >= total:
+                _rwy_release(fid)   # defensive no-op if already released at rotation
                 traffic.clear(fid)  # off the ground / done taxiing
                 _state[fid] = "DONE"
 
@@ -646,7 +691,7 @@ async def _tick_one(fid: str) -> dict:
 
 async def _finish_one(fid: str, now: datetime) -> dict:
     meta = _roster[fid]
-    gates.release_gate(meta.get("assigned_gate"), now)
+    gates.release_gate(meta.get("assigned_gate"), now, fid)
     _rwy_release(fid)  # already released in advance() at finish — defensive no-op otherwise
     await db.execute("DELETE FROM live_positions WHERE flight_id=$1", fid)
     return {"id": fid, "callsign": meta["callsign"], "phase": "INACTIVE", "source": "lakebase"}
