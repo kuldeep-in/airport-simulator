@@ -57,11 +57,6 @@ _occupied_since: dict[str, datetime] = {}  # gate_id -> when the CURRENT occupan
 _history: list[dict] = []                  # completed stays: {gate_id, flight_id, occupied_from, occupied_until} (iso strings)
 
 
-def gate_exists(gate_id: str | None) -> bool:
-    """True if `gate_id` is a real stand in this sim (data/gateLonLat.json)."""
-    return bool(gate_id) and gate_id in _GATE_LONLAT
-
-
 def gate_heading(gate_id: str | None) -> float | None:
     """The authoritative nose-in parking heading (degrees, 0=N) for a gate,
     stored as the optional 3rd element of its data/gateLonLat.json entry
@@ -102,21 +97,28 @@ def load() -> None:
         _gate_capacity[gate_id] = _CAPACITY_BY_GATE.get(gate_id, "NARROW")
 
 
-def reserve_gate(capacity_class: str, flight_id: str, now: datetime) -> str | None:
+def reserve_gate(capacity_class: str, flight_id: str, now: datetime,
+                 exclude: set[str] | None = None) -> str | None:
     """Randomly pick a free gate for `flight_id`, preferring one matching
     `capacity_class` (widening to a larger class if none match exactly), and
     falling back to ANY free gate regardless of class if the whole pool of
     matching classes is exhausted. Returns None only if literally every gate
     is occupied (61 gates vs. at most ~30 flights in flight at once — should
     not happen in practice, but callers must handle it). `now` (sim time)
-    marks the start of this occupancy for history purposes."""
+    marks the start of this occupancy for history purposes.
+
+    `exclude` is an optional set of gate ids to never assign — used by arrivals to
+    skip stands that proved to have no taxiway route (see
+    seed_runner._UNROUTABLE_GATES), so a known-dead stand isn't handed out again."""
+    skip = exclude or frozenset()
     for cls in _WIDEN_ORDER.get(capacity_class, [capacity_class]):
         candidates = [g for g, c in _gate_capacity.items()
-                      if c == cls and _gate_status[g] == "AVAILABLE"]
+                      if c == cls and _gate_status[g] == "AVAILABLE" and g not in skip]
         if candidates:
             return _occupy(random.choice(candidates), flight_id, now)
 
-    any_available = [g for g, s in _gate_status.items() if s == "AVAILABLE"]
+    any_available = [g for g, s in _gate_status.items()
+                     if s == "AVAILABLE" and g not in skip]
     if any_available:
         return _occupy(random.choice(any_available), flight_id, now)
     return None
@@ -167,38 +169,20 @@ def release_gate(gate_id: str | None, now: datetime, flight_id: str | None = Non
 
 
 def snapshot() -> list[dict]:
-    """Real occupancy for every gate — feeds broadcaster.build_full_state()
-    and, via that, the Live Gates board / gate markers on the map."""
+    """Real occupancy for every gate — published to Lakebase `gate_occupancy` each tick
+    by the generator (see gate_state.publish), which is how the APP gets gate state now
+    that it runs in a separate process and can't read this registry directly.
+
+    Includes `capacity_class` and `occupied_since` as well as the current occupant,
+    because the app's Gates page needs all four and has no other source for them."""
     return [
-        {"id": gate_id, "status": status, "occupied_by": _occupied_by.get(gate_id)}
+        {
+            "id":             gate_id,
+            "capacity_class": _gate_capacity.get(gate_id),
+            "status":         status,
+            "occupied_by":    _occupied_by.get(gate_id),
+            "occupied_since": _occupied_since.get(gate_id),
+        }
         for gate_id, status in _gate_status.items()
     ]
 
-
-def gates_overview() -> list[dict]:
-    """Every gate — id, capacity class, current occupant (with since), and
-    full occupancy history (most recent first) — for the Gates page
-    (GET /api/gates). Unlike snapshot(), this is only fetched on demand (not
-    broadcast every tick), so it can afford to include the full history."""
-    by_gate: dict[str, list[dict]] = {}
-    for h in _history:
-        by_gate.setdefault(h["gate_id"], []).append(h)
-
-    out = []
-    for gate_id, status in _gate_status.items():
-        current = None
-        if status == "OCCUPIED":
-            since = _occupied_since.get(gate_id)
-            current = {
-                "flight_id": _occupied_by.get(gate_id),
-                "occupied_from": since.isoformat() if since else None,
-            }
-        history = sorted(by_gate.get(gate_id, []), key=lambda h: h["occupied_from"], reverse=True)
-        out.append({
-            "id": gate_id,
-            "status": status,
-            "capacity_class": _gate_capacity.get(gate_id),
-            "current": current,
-            "history": history,
-        })
-    return out

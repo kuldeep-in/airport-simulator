@@ -1,81 +1,88 @@
 # airport-simulator
 
-Real-time **3D + 2D digital twin of Hamad International Airport (HIA / OTHH, Doha)**,
-deployed as a single **Databricks App**. Live flights come from the **AeroDataBox**
-API; a FastAPI backend simulates their ground movement (taxi, gates, runways),
-persists a live flight dataset in **Lakebase**, and streams updates to the browser
-over a WebSocket. Doubles as a continuously growing dataset for BI / Genie / ML.
+Real-time **2D + 3D digital twin of Hamad International Airport (HIA / OTHH, Doha)** on
+Databricks. Real flights come from the **AeroDataBox** API, land in the **Lakehouse**
+(Unity Catalog volumes → Spark Declarative Pipelines → Delta), are synced into
+**Lakebase** (Postgres) for low-latency serving, and drive a ground simulation (taxi,
+gates, runways, turnarounds) and synthetic terminal sensors inside a **Databricks App**.
+An **Ask Genie** tab answers natural-language questions over the Delta history.
 
 ## Features
 
-- **2D Radar (Home)** `/` — FlightRadar-style top-down map: plane sprites, runway
-  markings, pax/temperature heatmap, zoom-locked to the airfield, click-to-inspect
-  flight popup (airline logo, gate, route, scheduled time), and a live
-  arrivals/departures board.
-- **3D scene** `/3d` — three.js scene: real aircraft models taxiing on real HIA
-  pavement (hidden from the tab bar; reachable by URL).
-- **Schedule / Gates / Dashboard** tabs — live arrivals & departures board, gate
-  occupancy, and metrics.
-- **Live data** — real OTHH flights from AeroDataBox, refreshed on a 4-hour cadence
-  and cached in Lakebase (deploys don't burn API quota).
-- **Realistic ground sim** — Dijkstra taxi routing, single-occupant runway locks,
-  gate assignment, cross-stream traffic separation.
+- **Home `/`** — 2D radar map: aircraft sprites on real HIA pavement, runway markings,
+  pax/temperature heatmap, click-to-inspect flight popup, live arrivals/departures board.
+- **Dashboard** — live demand, departure queue, gate/delay analytics, and pax density +
+  temperature tracking for the last 15 minutes in 5-minute windows.
+- **Schedule / Gates** — live flight board and gate occupancy with history.
+- **Ask Genie** — questions over the flight tables, answered with text, SQL and results.
+- **About** — live architecture diagram (App / Lakebase / Lakehouse boundaries) and a
+  catalog of every table and volume in the flow.
+- **3D `/3d`** — three.js scene (rotate, tilt, 3D/top toggle).
 
-## Tech stack
+## Architecture
+
+```
+AeroDataBox ─▶ [Lakehouse] ingest job (every 4h): fetch notebook → raw_api volume
+                           → SDP pipeline → Delta bronze / silver (SCD1 + SCD2)
+                           → TRIGGERED synced table ─▶ [Lakebase] flight_schedule_<iata>
+[App] generator (child process): flights 1 Hz, sensors 5 s ─▶ [Lakebase] live tables
+                                 └─ telemetry files every 15 min ─▶ raw_telemetry volume ─▶ pipeline ─▶ Delta history
+[App] API server ◀─ Lakebase ─▶ React UI (WebSocket + REST) ─▶ Ask Genie ─▶ Genie space ─▶ Delta (SQL warehouse)
+```
+
+One always-on compute (the App); everything else is short serverless runs every 4 hours
+or on-demand Genie queries. Two airports are configured: **DOH** (simulated) and **LHR**
+(ingest + Genie only). Details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 | Layer | Tech |
 |---|---|
-| Backend | FastAPI, asyncio, `asyncpg` |
-| Frontend | React, three.js / `@react-three/fiber`, zustand, SVG |
-| Data | Lakebase (Postgres) — live positions, flight dataset, gate log |
-| Live feed | AeroDataBox (RapidAPI) |
-| Platform | Databricks App (FEVM workspace) |
+| App backend | FastAPI, asyncio, `asyncpg`, Databricks SDK |
+| Frontend | React, SVG, three.js / `@react-three/fiber`, zustand |
+| Serving store | Lakebase (Postgres) — synced flight tables + live sim/sensor tables |
+| Lakehouse | Unity Catalog volumes, Spark Declarative Pipelines (Auto Loader, AUTO CDC), Delta |
+| Analytics | AI/BI Genie space on a serverless SQL warehouse |
+| Deployment | Databricks Asset Bundles (`databricks.yml` + `resources/`) |
 
-## Quick start
+## Quick start (local)
 
 ```bash
-# 1. Build the frontend (FastAPI serves frontend/dist as-is; it does not build it)
-cd frontend && npm install && npm run build && cd ..
-
-# 2. Run locally (needs PG* env vars for Lakebase, else it starts in demo mode)
-python -m uvicorn app:app --host 0.0.0.0 --port 8000     # backend
-cd frontend && npm run dev                                # vite dev server (proxies /api, /ws)
+cd frontend && npm install && npm run build && cd ..          # FastAPI serves frontend/dist as-is
+RUN_GENERATOR=1 python -m uvicorn app:app --host 0.0.0.0 --port 8000   # needs PG* env vars, else demo mode
+cd frontend && npm run dev                                     # optional vite dev server (proxies /api, /ws)
 ```
 
 ## Deploy (Databricks)
 
-Both commands are required every time — `bundle deploy` uploads files, `apps deploy`
-restarts the app:
+Both commands are required every time — `bundle deploy` uploads files and manages the
+job, pipeline, volumes, Genie space and app resources; `apps deploy` serves the new code:
 
 ```bash
-cd frontend && npm run build      # rebuild if the frontend changed
-databricks bundle deploy -p fevm01
+cd frontend && npm run build
+databricks bundle deploy -p <profile>
 databricks apps deploy airport-simulator \
-  --source-code-path /Workspace/Users/you@example.com/.bundle/airport-simulator/dev/files \
-  -p fevm01
+  --source-code-path /Workspace/Users/<you>/.bundle/airport-simulator/dev/files -p <profile>
 ```
 
 ## Documentation
 
 | Doc | What's in it |
 |---|---|
-| **[docs/APPFLOW.md](docs/APPFLOW.md)** | End-to-end data flow for arrivals & departures — API → Lakebase dataset → simulation → 3D/2D views |
-| **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** | Module responsibilities, data-flow diagrams, Lakebase table lineage |
-| **[CLAUDE.md](CLAUDE.md)** | Source of truth: infra, deploy, current state, known issues, conventions, codebase map |
-| **[PLAN.md](PLAN.md)** | Original product vision & feature roadmap |
+| [CLAUDE.md](CLAUDE.md) | Source of truth: infra, deploy, current state, known issues, conventions, codebase map |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Boundaries, components, table catalog, cost design decisions |
+| [docs/APPFLOW.md](docs/APPFLOW.md) | End-to-end data-flow walkthrough (flights and sensors) |
+| [docs/FLOW.md](docs/FLOW.md) | Mermaid diagrams of every flow |
+| [resources/README.md](resources/README.md) | Bundle resources, Genie workflow, adding an airport |
 
 ## Repository layout
 
 ```
-app.py                 FastAPI entry: REST endpoints, /ws, static serving, lifespan
-app.yaml               Databricks App config
-databricks.yml         DAB bundle
-server/                Backend
-  config.py            Auth: workspace client, OAuth, secret fetch
-  db.py                asyncpg pool + demo-mode fallback
-  simulator/           The simulation (broadcaster, live_schedule, flight_store,
-                       seed_runner, departures, gates, taxiway_graph, runway, …)
-frontend/src/          React app (Scene3D, pages/Radar2DPage, store, hooks)
-data/                  Geo + roster JSON (hiaBase, hiaWays, gates, zones, …)
-docs/                  APPFLOW.md, ARCHITECTURE.md
+app.py, app.yaml, generator.py     App entry, app config, generator entry (runs as the app's child)
+databricks.yml, resources/         Bundle: app, ingest job + pipeline + volumes, Genie space
+notebooks/, pipelines/             Ingest notebooks and the SDP pipeline
+genie/                             Genie space definition
+config/airports.json               Airport registry
+server/                            Backend (API, reader, Genie client, simulator/)
+frontend/src/                      React app
+data/                              Airport geodata + turnaround pairs
+docs/                              Architecture, data flow, diagrams
 ```

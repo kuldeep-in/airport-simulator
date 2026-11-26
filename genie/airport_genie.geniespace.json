@@ -1,0 +1,215 @@
+{
+  "data_sources": {
+    "tables": [
+      {
+        "column_configs": [
+          {
+            "column_name": "aircraft_model",
+            "enable_entity_matching": true,
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "aircraft_reg",
+            "enable_entity_matching": true,
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "aircraft_type",
+            "enable_entity_matching": true,
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "airline",
+            "enable_entity_matching": true,
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "airport",
+            "enable_entity_matching": true,
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "api_gate",
+            "enable_entity_matching": true,
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "api_status",
+            "enable_entity_matching": true,
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "baggage_belt",
+            "enable_entity_matching": true,
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "callsign",
+            "enable_entity_matching": true,
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "delay_minutes",
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "destination",
+            "enable_entity_matching": true,
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "destination_name",
+            "enable_entity_matching": true,
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "direction",
+            "enable_entity_matching": true,
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "fetched_at",
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "flight_date",
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "flight_number",
+            "enable_entity_matching": true,
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "origin",
+            "enable_entity_matching": true,
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "origin_name",
+            "enable_entity_matching": true,
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "revised_time_utc",
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "sched_time_utc",
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "scheduled_utc",
+            "enable_format_assistance": true
+          }
+        ],
+        "identifier": "classic_stable_kuldeep.airport_simulator_doh.silver_flight_schedule_doh"
+      },
+      {
+        "column_configs": [
+          {
+            "column_name": "aircraft_model",
+            "enable_entity_matching": true,
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "aircraft_reg",
+            "enable_entity_matching": true,
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "aircraft_type",
+            "enable_entity_matching": true,
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "airline",
+            "enable_entity_matching": true,
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "airport",
+            "enable_entity_matching": true,
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "api_gate",
+            "enable_entity_matching": true,
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "api_status",
+            "enable_entity_matching": true,
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "baggage_belt",
+            "enable_entity_matching": true,
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "callsign",
+            "enable_entity_matching": true,
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "delay_minutes",
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "destination",
+            "enable_entity_matching": true,
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "destination_name",
+            "enable_entity_matching": true,
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "direction",
+            "enable_entity_matching": true,
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "fetched_at",
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "flight_date",
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "flight_number",
+            "enable_entity_matching": true,
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "origin",
+            "enable_entity_matching": true,
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "origin_name",
+            "enable_entity_matching": true,
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "revised_time_utc",
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "sched_time_utc",
+            "enable_format_assistance": true
+          },
+          {
+            "column_name": "scheduled_utc",
+            "enable_format_assistance": true
+          }
+        ],
+        "identifier": "classic_stable_kuldeep.airport_simulator_lhr.silver_flight_schedule_lhr"
+      }
+    ]
+  },
+  "version": 2
+}

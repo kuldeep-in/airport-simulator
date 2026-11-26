@@ -8,6 +8,9 @@ import oldAirportWays from '../data/oldAirportWays.json';
 import dohaContext from '../data/dohaContext.json';
 import CoordDisplay from '../components/panels/CoordDisplay';
 import { getPlaneSprite, SPRITE_FLIP_DEG } from './planeSprites.js';
+import { AIRPORT } from '../lib/airport.js';
+import { PHASE_LABEL as _PHASE_LABEL, PHASE_COLOR as _PHASE_COLOR } from '../lib/phases.js';
+import { GATE_LONLAT } from '../data/gateData.js';
 
 // Body/tail livery pairs mirror Aircraft3D.jsx so the rendered 3D-model sprites
 // are coloured identically to the 3D scene.
@@ -21,6 +24,15 @@ const LIVERY_BT = {
   IX: { body: '#c8102e', tail: '#e07a1a' }, G9: { body: '#5a2a7a', tail: '#e9552a' },
   QP: { body: '#1c6ba0', tail: '#e9552a' }, XY: { body: '#0a6b3b', tail: '#c8a02a' },
   WB: { body: '#0a6b5a', tail: '#c8a02a' },
+  // European carriers (OSL / AGP and majors) — SK = SAS, per request.
+  SK: { body: '#0a3a6b', tail: '#0a2f55' }, DY: { body: '#c8102e', tail: '#8a0020' },
+  WF: { body: '#0a7d4a', tail: '#075a36' }, VY: { body: '#e0a800', tail: '#1a2b4a' },
+  IB: { body: '#c8102e', tail: '#e0a800' }, UX: { body: '#0a3a7a', tail: '#0a2f55' },
+  FR: { body: '#0a3d91', tail: '#f1c40f' }, U2: { body: '#ee6100', tail: '#d1560a' },
+  W6: { body: '#c2168c', tail: '#8a0f63' }, LH: { body: '#05164d', tail: '#e0b000' },
+  BA: { body: '#1d3d78', tail: '#c8102e' }, AF: { body: '#0a2d6b', tail: '#c8102e' },
+  KL: { body: '#0a6ba8', tail: '#0a4a78' }, TP: { body: '#0a6b3b', tail: '#c8102e' },
+  AY: { body: '#0a3a8a', tail: '#0a2f66' }, LX: { body: '#c8102e', tail: '#8a0020' },
 };
 function liveryBT(code) {
   const c = (code || '').toUpperCase();
@@ -44,6 +56,9 @@ const AIRLINE_LIVERY = {
   SV: '#0a6b3b', KU: '#1c6b3b', GF: '#b48a2e', ME: '#c8102e', RJ: '#3a4a5a',
   WY: '#7a2036', '6E': '#0a3a7a', IX: '#c8102e', G9: '#5a2a7a', QP: '#1c6ba0',
   XY: '#0a6b3b', WB: '#0a6b5a',
+  SK: '#0a3a6b', DY: '#c8102e', WF: '#0a7d4a', VY: '#e0a800', IB: '#c8102e',
+  UX: '#0a3a7a', FR: '#0a3d91', U2: '#ee6100', W6: '#c2168c', LH: '#05164d',
+  BA: '#1d3d78', AF: '#0a2d6b', KL: '#0a6ba8', TP: '#0a6b3b', AY: '#0a3a8a', LX: '#c8102e',
 };
 function hashHue(code) {
   let h = 0;
@@ -62,8 +77,8 @@ function liveryFor(code) {
 // water stays visually distinct (blue). The runway + taxiway NETWORK is drawn
 // separately as darker lines on top (see RUNWAY_LINES/TAXIWAY_LINES), which is what
 // actually conveys the layout — the polygons just form the light landmass.
-const PAGE_BG = '#c9d2dc';       // light ground; canvas background matches so edges blend
-const GROUND = { fill: '#c9d2dc', stroke: '#b3bec9' };       // all land/airport surface
+const PAGE_BG = '#d4c69d';       // Doha desert-sand ground; canvas background matches so edges blend
+const GROUND = { fill: '#d4c69d', stroke: '#c2b489' };       // all land/airport surface (sand; stroke a shade darker to blend, no seams)
 const TERMINAL = { fill: '#aeb9c6', stroke: '#97a3b2' };     // terminals a touch darker to hint buildings
 const WATER = { fill: '#7fa8c9', stroke: '#6f9bbf' };        // the only distinct colour
 // Context areas OUTSIDE the operational airport (military compounds, big car/
@@ -270,6 +285,30 @@ function lonLatLineToPath(pts) {
 const LAND_PATH = lonLatRingToPath(dohaContext.land);
 const ISLAND_PATHS = dohaContext.islands.map(lonLatRingToPath);
 const WATER_PATHS = dohaContext.water.map(lonLatRingToPath);
+
+// ── Gate-number labels (empty stands) ───────────────────────────────────────────
+// Painted stand numbers on the apron, mirroring the 3D scene's GateMarker: shown
+// only for the real modeled stands (VISIBLE_GATES) and only while the stand is
+// EMPTY — once a flight is parked / gate-parked / taxiing out of it the number is
+// hidden (the plane sits on it, redundant clutter). Positions come from the same
+// GATE_LONLAT source of truth the 3D scene uses. Pre-projected once at module load.
+const GATE_VISIBLE = new Set([
+  'A1', 'A3', 'A4', 'A5', 'A6', 'A7', 'A8', 'A9', 'A10', 'A11',
+  'B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7', 'B8', 'B9', 'B10',
+  'C1', 'C2', 'C3', 'C4', 'C5', 'C6', 'C7', 'C8', 'C9',
+  'C10', 'C11', 'C12', 'C13', 'C14', 'C15', 'C16', 'C18', 'C19',
+  'C20', 'C22', 'C23', 'C24', 'C25', 'C26',
+  'D1', 'D2', 'D3', 'D4', 'D5', 'D6', 'D7', 'D8', 'D9',
+  'E1', 'E2', 'E3', 'E4', 'E5', 'E6', 'E7', 'E8',
+]);
+// Phases where the stand's number is hidden (mirrors Airport3D's HIDE_NUM_PHASES).
+const GATE_HIDE_PHASES = new Set(['PARKED', 'GATE_PARKED', 'TAXIING_OUT']);
+const GATE_LABEL_POS = Object.entries(GATE_LONLAT)
+  .filter(([id]) => GATE_VISIBLE.has(id))
+  .map(([id, ll]) => {
+    const [x, y] = project(ll[0], ll[1]);
+    return { id, x, y };
+  });
 // Group roads by class so each class draws in one <g> with its own stroke.
 const CONTEXT_ROADS_BY_CLASS = ['mtr', 'pri'].map((cls) => ({
   cls,
@@ -313,6 +352,33 @@ const VIEW_EXTENT = (() => {
     minX: FOCUS_EXTENT.minX - ex, minY: FOCUS_EXTENT.minY - ey,
     maxX: FOCUS_EXTENT.maxX + ex, maxY: FOCUS_EXTENT.maxY + ey,
   };
+})();
+
+// The airfield itself — runways + taxiways only (no roads / old airport). The home
+// view's default AND minimum zoom is set from this: the airfield fills
+// HOME_AIRFIELD_FILL of the map's limiting dimension, which reproduces the agreed
+// reference view (whole airfield visible with coastline around it) on any screen size.
+const AIRFIELD_EXTENT = (() => {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const w of hiaWays) for (const p of w.p) {
+    const [x, y] = shapeToSvg(p);
+    if (x < minX) minX = x; if (x > maxX) maxX = x;
+    if (y < minY) minY = y; if (y > maxY) maxY = y;
+  }
+  return { minX, minY, maxX, maxY };
+})();
+// Home view = minimum zoom: the airfield fills this share of the map's limiting
+// dimension. History: 0.7 (first reference) → ÷1.3 (one step out) → ×1.3² (two steps in).
+const HOME_AIRFIELD_FILL = 0.7 * 1.3;
+// Pan bounds: VIEW_EXTENT made SYMMETRIC around the airfield centre, so the home view
+// (centred on the airfield) is always a valid position — otherwise the first drag on a
+// wide screen snapped the map sideways back inside the old, off-centre bounds.
+const PAN_EXTENT = (() => {
+  const cx = (AIRFIELD_EXTENT.minX + AIRFIELD_EXTENT.maxX) / 2;
+  const cy = (AIRFIELD_EXTENT.minY + AIRFIELD_EXTENT.maxY) / 2;
+  const hx = Math.max(cx - VIEW_EXTENT.minX, VIEW_EXTENT.maxX - cx);
+  const hy = Math.max(cy - VIEW_EXTENT.minY, VIEW_EXTENT.maxY - cy);
+  return { minX: cx - hx, maxX: cx + hx, minY: cy - hy, maxY: cy + hy };
 })();
 
 // Runway stroke width in SVG units (matches the <path> below: 6 * WAYS_K).
@@ -516,12 +582,11 @@ function AircraftGlyph({ flight, pos, scale, selected, onSelect, onSpriteReady, 
           </g>
         )}
       </g>
-      {/* SELECTED → rich popup (icon, callsign+type, gate, route, sched time),
-          moving with the plane. Otherwise → the minimal callsign+route labels.
-          `s` (the zoom counter-scale) keeps both constant on-screen. */}
-      {selected ? (
-        <AircraftPopup flight={flight} x={span * 0.5} />
-      ) : showDetails ? (
+      {/* When SELECTED the rich popup is drawn in a separate top layer (see
+          SelectedAircraftPopup) so it's never hidden under other planes; the
+          minimal callsign+route labels are hidden to avoid clutter beneath it.
+          `s` (the zoom counter-scale) keeps the labels constant on-screen. */}
+      {selected ? null : showDetails ? (
         <>
           {/* callsign + route in the aircraft's body colour, plain bold text
               (no double-edge stroke) */}
@@ -537,62 +602,94 @@ function AircraftGlyph({ flight, pos, scale, selected, onSelect, onSpriteReady, 
   );
 }
 
-// Rich info card shown beside a SELECTED aircraft (moves with the plane since it
-// lives inside the plane's transformed <g>). Airline logo + callsign (type),
-// gate, origin→destination, and the scheduled arrival/departure time.
-const _fmtSched = (iso) => {
+// Rich info card shown beside a SELECTED aircraft. Rendered in a dedicated TOP
+// layer (after all planes) so it's never hidden under other aircraft, but still
+// inside the pan/zoom group so it tracks the plane. Airline logo + callsign
+// (type), gate, origin→destination, and the scheduled arrival/departure time.
+const _fmtSched = (iso, tz = 'Asia/Qatar') => {
   if (!iso) return null;
   try {
     return new Date(iso).toLocaleTimeString('en-GB', {
-      hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Qatar',
+      hour: '2-digit', minute: '2-digit', timeZone: tz,
     });
   } catch { return null; }
 };
-function AircraftPopup({ flight, x }) {
-  const isArrival = flight?.destination === 'DOH';
+
+// Relative luminance of a hex colour (0=black, 1=white) → pick readable text.
+function _lum(hex) {
+  const h = (hex || '').replace('#', '');
+  const n = h.length === 3 ? h.split('').map((c) => c + c).join('') : h;
+  const r = parseInt(n.slice(0, 2), 16), g = parseInt(n.slice(2, 4), 16), b = parseInt(n.slice(4, 6), 16);
+  if ([r, g, b].some(Number.isNaN)) return 0;
+  return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+}
+
+// Card footprint in SVG world units (counter-scaled by the parent so it's a
+// constant size on-screen). Bigger than before, per request.
+const POPUP_W = 132, POPUP_H = 68;
+
+// Just the card artwork, drawn from its top-left corner at (0,0). Background is
+// the aircraft's livery colour; text colour flips to stay readable on light or
+// dark liveries; a white chip guarantees the airline logo is always legible.
+function AircraftPopup({ flight, tz = 'Asia/Qatar', tzAbbr = 'AST', homeIata = 'DOH' }) {
+  const isArrival = flight?.destination === homeIata;
   const callsign = flight?.callsign || flight?.id || '';
   const type = flight?.aircraft_type || '—';
   const gate = flight?.assigned_gate;
   const origin = flight?.origin || '—';
   const dest = flight?.destination || '—';
-  const sched = _fmtSched(isArrival ? flight?.scheduled_arr : flight?.scheduled_dep);
+  const sched = _fmtSched(isArrival ? flight?.scheduled_arr : flight?.scheduled_dep, tz);
   const airline = (flight?.airline || '').toUpperCase();
-  const accent = liveryBT(flight?.airline).body;
-
-  // Card geometry (SVG world units; counter-scaled by the parent so it's constant
-  // on screen). Wider so text never spills; logo on its own top row so it can't
-  // overlap the callsign.
-  const W = 92, H = 46, pad = 5;
-  // rows: [logo baseline area, callsign, gate, route, sched]
-  const rowY = [pad + 12, pad + 20, pad + 28, pad + 36];
+  const bg = liveryBT(flight?.airline).body;         // aircraft livery colour = card bg
+  const dark = _lum(bg) < 0.55;
+  const fg = dark ? '#ffffff' : '#0a0e1a';
+  const muted = dark ? 'rgba(255,255,255,0.74)' : 'rgba(10,14,26,0.66)';
+  const border = dark ? 'rgba(255,255,255,0.38)' : 'rgba(10,14,26,0.32)';
+  const pad = 9;
   const logo = `/airline-logos/${airline}.png`;
 
   return (
-    <g transform={`translate(${x}, ${-H / 2})`} style={{ pointerEvents: 'none' }}>
-      {/* card */}
-      <rect x={0} y={0} width={W} height={H} rx={4}
-            fill="#0d1522" opacity={0.94} stroke={accent} strokeWidth={0.9} />
-      {/* airline logo — own top-left row, generous box, never overlaps text
-          (falls back invisibly if the code has no file) */}
-      <image href={logo} x={pad} y={pad - 1} width={34} height={9}
-             preserveAspectRatio="xMinYMid meet" onError={(e) => { e.target.style.display = 'none'; }} />
-      {/* line 1: callsign (type) */}
-      <text x={pad} y={rowY[0]} fontSize={7} fontWeight={700} fill="#e8edf4">
-        {callsign} <tspan fill="#8a97a8" fontWeight={400}>({type})</tspan>
+    <>
+      {/* soft drop shadow to separate the card from the busy map */}
+      <rect x={1.5} y={2} width={POPUP_W} height={POPUP_H} rx={8} fill="#000" opacity={0.4} />
+      {/* card — filled with the aircraft's livery colour */}
+      <rect x={0} y={0} width={POPUP_W} height={POPUP_H} rx={8} fill={bg} stroke={border} strokeWidth={1.2} />
+      {/* white chip so the airline logo is legible on any livery — snug to the top */}
+      <rect x={pad} y={6} width={56} height={16} rx={3.5} fill="#ffffff" />
+      <image href={logo} x={pad + 3} y={7.5} width={50} height={13}
+             preserveAspectRatio="xMidYMid meet" onError={(e) => { e.target.style.display = 'none'; }} />
+      {/* callsign (type) */}
+      <text x={pad} y={37} fontSize={13} fontWeight={800} fill={fg}>
+        {callsign} <tspan fontSize={8.5} fontWeight={500} fill={muted}>({type})</tspan>
       </text>
-      {/* line 2: gate */}
-      <text x={pad} y={rowY[1]} fontSize={5.5} fill="#8a97a8">
-        GATE <tspan fill="#e8edf4" fontWeight={700}>{gate || '—'}</tspan>
+      {/* gate + route on one row */}
+      <text x={pad} y={49} fontSize={8} fill={muted}>
+        GATE <tspan fill={fg} fontWeight={700} fontSize={9}>{gate || '—'}</tspan>
       </text>
-      {/* line 3: origin → destination */}
-      <text x={pad} y={rowY[2]} fontSize={5.5} fill="#e8edf4" fontWeight={700}>
-        {origin} <tspan fill={accent}>→</tspan> {dest}
+      <text x={pad + 48} y={49} fontSize={9} fontWeight={800} fill={fg}>
+        {origin} <tspan fill={muted}>→</tspan> {dest}
       </text>
-      {/* line 4: scheduled arr/dep time */}
-      <text x={pad} y={rowY[3]} fontSize={5.5} fill="#8a97a8">
-        {isArrival ? 'ARR' : 'DEP'} <tspan fill="#e8edf4" fontWeight={700}>{sched || '—'}</tspan>
-        <tspan fill="#8a97a8"> AST</tspan>
+      {/* scheduled arr/dep time — leaves ~9u of breathing room below to the card edge */}
+      <text x={pad} y={59} fontSize={8} fill={muted}>
+        {isArrival ? 'ARR' : 'DEP'} <tspan fill={fg} fontWeight={700} fontSize={9}>{sched || '—'}</tspan>
+        <tspan fill={muted}> {tzAbbr}</tspan>
       </text>
+    </>
+  );
+}
+
+// Positions the card beside the selected plane, counter-scaled so it stays a
+// constant on-screen size (mirrors AircraftGlyph's own counter-scale).
+function SelectedAircraftPopup({ pos, flight, scale, tz, tzAbbr, homeIata }) {
+  if (pos?.lat == null || pos?.lon == null) return null;
+  const [x, y] = project(pos.lon, pos.lat);
+  const s = 1 / Math.pow(scale, 0.8);
+  const span = SPRITE_SPAN[resolveType(flight?.aircraft_type)];
+  return (
+    <g transform={`translate(${x},${y}) scale(${s})`} style={{ pointerEvents: 'none' }}>
+      <g transform={`translate(${span * 0.6}, ${-POPUP_H / 2})`}>
+        <AircraftPopup flight={flight} tz={tz} tzAbbr={tzAbbr} homeIata={homeIata} />
+      </g>
     </g>
   );
 }
@@ -605,6 +702,10 @@ function Radar2DInner() {
   const setMapClickCoord = useSimStore((s) => s.setMapClickCoord);
   const simTime = useSimStore((s) => s.simTime);
   const sensorReadings = useSimStore((s) => s.sensorReadings);
+  const feed = useSimStore((s) => s.feed);
+  const { tz, tz_abbr: tzAbbr } = AIRPORT;
+  const homeIata = AIRPORT.iata;
+  const airportLabel = AIRPORT.iata;
 
   // 2D-only layer toggles (local — does NOT touch the 3D view's layers). Here
   // "Aircraft" toggles the DETAIL LABELS only (callsign + route); the plane icon
@@ -639,17 +740,22 @@ function Radar2DInner() {
     const cy = (VIEW_EXTENT.minY + VIEW_EXTENT.maxY) / 2;
     return { fitScale, cx, cy };
   }, [size]);
-  const MIN_SCALE = fitInfo.fitScale;          // fit-to-view = furthest you can zoom out
-  const MAX_SCALE = MIN_SCALE * ZOOM_RANGE;    // cap zoom-in relative to the fit
-  // The view opens at the MIDDLE of the (log-scale) zoom slider — the geometric
-  // mean of MIN/MAX lands the slider knob at exactly 0.5, giving equal zoom room
-  // in and out from the default. (Was MIN_SCALE, i.e. slider pinned at the bottom.)
-  const DEFAULT_SCALE = MIN_SCALE * Math.sqrt(ZOOM_RANGE);
+  // Default = minimum zoom: the airfield fills HOME_AIRFIELD_FILL (70%) of the map's
+  // limiting dimension — the agreed reference view. You can zoom in from there but
+  // never out past it. Zoom-in headroom is unchanged (same absolute max as before).
+  const airfieldFit = Math.min(size.w / (AIRFIELD_EXTENT.maxX - AIRFIELD_EXTENT.minX),
+                               size.h / (AIRFIELD_EXTENT.maxY - AIRFIELD_EXTENT.minY));
+  const DEFAULT_SCALE = airfieldFit * HOME_AIRFIELD_FILL;
+  const MIN_SCALE = DEFAULT_SCALE;
+  const MAX_SCALE = Math.max(fitInfo.fitScale * ZOOM_RANGE, MIN_SCALE * 4);
   const initialView = useMemo(() => {
-    const { cx, cy } = fitInfo;
+    // Open centred on the AIRFIELD itself (not the wider context extent, whose roads
+    // and old airport pulled the centre left).
+    const cx = (AIRFIELD_EXTENT.minX + AIRFIELD_EXTENT.maxX) / 2;
+    const cy = (AIRFIELD_EXTENT.minY + AIRFIELD_EXTENT.maxY) / 2;
     const scale = DEFAULT_SCALE;
     return { scale, tx: size.w / 2 - cx * scale, ty: size.h / 2 - cy * scale };
-  }, [size, fitInfo, DEFAULT_SCALE]);
+  }, [size, DEFAULT_SCALE]);
 
   // Clamp a {scale,tx,ty} view so the airport can never be dragged into empty
   // space. Per axis: if the extent is SMALLER than the viewport (true at the
@@ -658,7 +764,7 @@ function Radar2DInner() {
   // covers the viewport — you can pan within the airport but not past its edges.
   const clampView = useCallback((v) => {
     const scale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, v.scale));
-    const E = VIEW_EXTENT;
+    const E = PAN_EXTENT;
     const sw = (E.maxX - E.minX) * scale;
     const sh = (E.maxY - E.minY) * scale;
     let { tx, ty } = v;
@@ -788,11 +894,20 @@ function Radar2DInner() {
   }, [onWheel]);
 
   const posList = useMemo(() => Object.values(positions), [positions]);
-  const activeCount = posList.length;
   const sensorList = useMemo(() => Object.values(sensorReadings), [sensorReadings]);
+  // Gates whose number to HIDE — a flight is parked at / gate-parked / taxiing out
+  // of the stand (mirrors Airport3D.occupiedGateIds). Empty stands keep their label.
+  const occupiedGates = useMemo(() => {
+    const s = new Set();
+    for (const f of Object.values(flights)) {
+      const phase = positions[f.id]?.phase ?? f.phase;
+      if (f.assigned_gate && GATE_HIDE_PHASES.has(phase)) s.add(f.assigned_gate);
+    }
+    return s;
+  }, [flights, positions]);
 
   const clockText = simTime
-    ? new Date(simTime).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: 'Asia/Qatar' })
+    ? new Date(simTime).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: tz })
     : '—';
 
   return (
@@ -957,6 +1072,31 @@ function Radar2DInner() {
               </text>
             ))
           )}
+          {/* empty-stand gate numbers — painted on the apron (mirrors the 3D
+              GateMarker). Hidden for a stand a flight is parked at / leaving, and
+              zoom-gated so they don't clutter the fully-zoomed-out view. Sized in
+              WORLD units (not counter-scaled), so the number scales WITH the ground
+              — growing as you zoom to ground level — with a white halo so it reads on
+              any ground colour. Drawn before the aircraft so a plane sits on top. */}
+          {view.scale > MIN_SCALE * 2.2 && GATE_LABEL_POS.map((g) => {
+            if (occupiedGates.has(g.id)) return null;
+            // Grow with zoom but SUB-linearly (exponent 0.8, same as the plane
+            // sprites' counter-scale) so the number scales with the ground yet
+            // never balloons at ground level. On-screen size ∝ scale^0.2.
+            const gs = 1 / Math.pow(view.scale, 0.8);
+            return (
+              <g key={g.id} transform={`translate(${g.x.toFixed(1)},${g.y.toFixed(1)}) scale(${gs.toFixed(4)})`}>
+                <text x={0} y={0}
+                      fontSize={8} fontWeight={700}
+                      fill="#2b2417" stroke="#ffffff" strokeWidth={2.2}
+                      paintOrder="stroke" strokeLinejoin="round"
+                      textAnchor="middle" dominantBaseline="central"
+                      style={{ pointerEvents: 'none', letterSpacing: 0 }}>
+                  {g.id}
+                </text>
+              </g>
+            );
+          })}
           {/* live aircraft */}
           {posList.map((pos) => (
             <AircraftGlyph
@@ -970,6 +1110,17 @@ function Radar2DInner() {
               showDetails={radarLayers.aircraft}
             />
           ))}
+          {/* Selected-aircraft popup — drawn LAST so it sits on top of every
+              plane (was previously nested in the plane's <g> and hidden by
+              later-drawn aircraft). */}
+          {(() => {
+            const selId = selectedEntity?.type === 'aircraft' ? selectedEntity.id : null;
+            if (!selId) return null;
+            const sp = posList.find((p) => p.flight_id === selId);
+            if (!sp) return null;
+            return <SelectedAircraftPopup pos={sp} flight={flights[selId]} scale={view.scale}
+                     tz={tz} tzAbbr={tzAbbr} homeIata={homeIata} />;
+          })()}
         </g>
       </svg>
 
@@ -981,20 +1132,34 @@ function Radar2DInner() {
       }}>
         <Radio size={16} color="#38bdf8" />
         <div>
-          <div style={{ fontSize: 13, fontWeight: 700, color: '#e2e8f0', lineHeight: 1 }}>HIA · 2D Radar</div>
-          <div style={{ fontSize: 10, color: '#6070a0', marginTop: 2 }}>Live ground movements — Databricks realtime</div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: '#e2e8f0', lineHeight: 1 }}>{airportLabel} · 2D Radar</div>
+          <div style={{ fontSize: 10, color: '#94a3b8', marginTop: 2 }}>Live ground movements — Databricks realtime</div>
         </div>
       </div>
 
-      {/* live stats */}
+      {/* current-time ticker — centered at the top (ACTIVE ON GROUND removed per request) */}
       <div style={{
-        position: 'absolute', top: 14, right: 14, textAlign: 'right',
+        position: 'absolute', top: 14, left: '50%', transform: 'translateX(-50%)',
+        textAlign: 'center',
         background: 'rgba(10,16,28,0.82)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8,
-        padding: '8px 14px', backdropFilter: 'blur(6px)', pointerEvents: 'none', fontFamily: 'monospace',
+        padding: '6px 18px', backdropFilter: 'blur(6px)', pointerEvents: 'none', fontFamily: 'monospace',
       }}>
-        <div style={{ fontSize: 18, fontWeight: 700, color: '#34d399', lineHeight: 1 }}>{activeCount}</div>
-        <div style={{ fontSize: 9, color: '#6070a0', letterSpacing: 1 }}>ACTIVE ON GROUND</div>
-        <div style={{ fontSize: 12, color: '#93a3b8', marginTop: 6 }}>{clockText} <span style={{ fontSize: 9 }}>AST</span></div>
+        <div style={{ fontSize: 20, fontWeight: 700, color: '#e2e8f0', lineHeight: 1, letterSpacing: 1 }}>
+          {clockText}<span style={{ fontSize: 11, color: '#94a3b8', marginLeft: 6 }}>{tzAbbr}</span>
+        </div>
+        {/* Positions come from a SEPARATE generator process via Lakebase. If it stops,
+            its last rows persist and the map would silently show frozen aircraft — so
+            say so explicitly rather than letting a stale map look live. */}
+        {feed && !feed.alive && (
+          <div title={`Last generator heartbeat: ${feed.age_seconds ?? '—'}s ago`}
+               style={{
+                 marginTop: 6, fontSize: 9, fontWeight: 700, letterSpacing: 0.5,
+                 color: '#f87171', border: '1px solid #f8717155', borderRadius: 4,
+                 padding: '2px 6px', display: 'inline-block',
+               }}>
+            ⚠ FEED STALE
+          </div>
+        )}
       </div>
 
       {/* live arrivals / departures board (like the 3D Home LiveGatesBoard) */}
@@ -1009,7 +1174,8 @@ function Radar2DInner() {
         border: '1px solid rgba(255,255,255,0.12)', borderRadius: 10, padding: '10px 8px',
         backdropFilter: 'blur(6px)', pointerEvents: 'auto',
       }}>
-        <button onClick={() => zoomTo(view.scale * 1.3)} style={ZOOM_BTN} title="Zoom in">+</button>
+        <button className="icon-btn" onClick={() => zoomTo(view.scale * 1.3)} style={ZOOM_BTN}
+                title="Zoom in" aria-label="Zoom in">+</button>
         <input
           type="range" min={0} max={1000} value={scaleToSlider(view.scale, MIN_SCALE, MAX_SCALE)}
           onChange={(e) => zoomTo(sliderToScale(Number(e.target.value), MIN_SCALE, MAX_SCALE))}
@@ -1019,7 +1185,8 @@ function Radar2DInner() {
           }}
           title="Zoom"
         />
-        <button onClick={() => zoomTo(view.scale / 1.3)} style={ZOOM_BTN} title="Zoom out">−</button>
+        <button className="icon-btn" onClick={() => zoomTo(view.scale / 1.3)} style={ZOOM_BTN}
+                title="Zoom out" aria-label="Zoom out">−</button>
       </div>
 
       {/* layer switcher (bottom-left) — Aircraft details / Pax density / Temp */}
@@ -1038,8 +1205,8 @@ function Radar2DInner() {
                 ? 'linear-gradient(to right,#0d47a1,#00ac82,#4caf50,#cddc39,#ffa000,#e53935,#b71c1c)'
                 : 'linear-gradient(to right,#0d47a1,#1e88e5,#00ac82,#4caf50,#cddc39,#ffa000,#e53935,#b71c1c)' }} />
             <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 2 }}>
-              <span style={{ fontSize: 9, color: '#6070a0' }}>{radarLayers.pax ? '0' : '18°C'}</span>
-              <span style={{ fontSize: 9, color: '#6070a0' }}>{radarLayers.pax ? '4 pax/m²' : '40°C'}</span>
+              <span style={{ fontSize: 9, color: '#94a3b8' }}>{radarLayers.pax ? '0' : '18°C'}</span>
+              <span style={{ fontSize: 9, color: '#94a3b8' }}>{radarLayers.pax ? '4 pax/m²' : '40°C'}</span>
             </div>
           </div>
         )}
@@ -1055,7 +1222,7 @@ function Radar2DInner() {
           <CoordDisplay />
         </div>
         <div style={{
-          fontSize: 10, color: '#6070a0', background: 'rgba(10,16,28,0.7)',
+          fontSize: 10, color: '#94a3b8', background: 'rgba(10,16,28,0.7)',
           borderRadius: 6, padding: '4px 10px', pointerEvents: 'none',
         }}>
           drag to pan · scroll or slider to zoom · click a plane to select · click map for coords
@@ -1065,10 +1232,13 @@ function Radar2DInner() {
   );
 }
 
+// 32px visual box, but padding-free flex centring plus a 44px minimum hit area via
+// the .icon-btn class (see index.css) — the skill's touch rules require 44x44 for
+// tap targets, and these were 26x26, hard to hit on a touch screen or trackpad.
 const ZOOM_BTN = {
-  width: 26, height: 26, borderRadius: 6, cursor: 'pointer',
+  width: 32, height: 32, borderRadius: 'var(--radius-md)', cursor: 'pointer',
   background: 'rgba(56,189,248,0.12)', border: '1px solid rgba(56,189,248,0.4)',
-  color: '#8fd6ff', fontSize: 16, fontWeight: 700, lineHeight: 1,
+  color: '#8fd6ff', fontSize: 17, fontWeight: 600, lineHeight: 1,
   display: 'flex', alignItems: 'center', justifyContent: 'center',
 };
 
@@ -1076,15 +1246,33 @@ const ZOOM_BTN = {
 // shared .switch/.knob CSS the 3D LayerToggles uses).
 function RadarToggle({ icon: Icon, label, on, onClick }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14, padding: '5px 0' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
-        <Icon size={15} color="#93a3b8" />
+    // The whole row is now one <button role="switch">: previously only the ~34px
+    // switch graphic was clickable (a bare div, so keyboard users couldn't toggle
+    // layers at all and the on/off state was never announced). Making the row the
+    // control also gives a comfortable 44px-tall target.
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      onClick={onClick}
+      className="radar-toggle-row"
+      style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14,
+        padding: '7px 4px', width: '100%', minHeight: 34,
+        background: 'transparent', border: 'none', cursor: 'pointer', textAlign: 'left',
+        borderRadius: 'var(--radius-sm)',
+      }}
+    >
+      <span style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+        <Icon size={15} color="#93a3b8" aria-hidden="true" />
         <span style={{ color: '#e2e8f0', fontSize: 13 }}>{label}</span>
-      </div>
-      <div className={`switch ${on ? 'on' : ''}`} onClick={onClick}>
-        <div className="knob" />
-      </div>
-    </div>
+      </span>
+      {/* Presentational now — the parent <button> owns the semantics, so this must
+          not also be announced as a control. */}
+      <span className={`switch ${on ? 'on' : ''}`} aria-hidden="true">
+        <span className="knob" />
+      </span>
+    </button>
   );
 }
 
@@ -1092,15 +1280,6 @@ function RadarToggle({ icon: Icon, label, on, onClick }) {
 // Mirrors the 3D Home LiveGatesBoard: two lists of the flights currently on the
 // map, ARRIVING (→DOH) and DEPARTING (DOH→), each with callsign, gate and phase.
 // Clicking a row selects that aircraft (same as clicking it on the map).
-const _PHASE_LABEL = {
-  ARRIVING: 'ARRIVING', PARKED: 'AT GATE', GATE_PARKED: 'AT GATE',
-  TAXIING_OUT: 'TAXIING OUT', HOLDING_SHORT: 'HOLDING SHORT', RUNWAY: 'ON RUNWAY',
-};
-const _PHASE_COLOR = {
-  ARRIVING: '#4ade80', PARKED: '#38bdf8', GATE_PARKED: '#38bdf8',
-  TAXIING_OUT: '#fbbf24', HOLDING_SHORT: '#f97316', RUNWAY: '#ef4444',
-};
-
 function FlightBoard({ posList, flights, selectedId, onSelect }) {
   const arriving = [], departing = [];
   for (const pos of posList) {
@@ -1117,17 +1296,30 @@ function FlightBoard({ posList, flights, selectedId, onSelect }) {
   departing.sort(byTime);
 
   const Row = (f) => (
-    <div key={f.id} onClick={() => onSelect(selectedId === f.id ? null : f.id)}
+    // Keyboard-selectable board row (was a bare <div onClick>). aria-pressed
+    // communicates which flight is currently selected.
+    <div key={f.id} role="button" tabIndex={0} aria-pressed={selectedId === f.id}
+      aria-label={`${f.callsign}, gate ${f.assigned_gate || 'unassigned'}, ${_PHASE_LABEL[f.phase] || f.phase || 'unknown'}`}
+      className="board-row"
+      onClick={() => onSelect(selectedId === f.id ? null : f.id)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onSelect(selectedId === f.id ? null : f.id);
+        }
+      }}
       style={{
-        display: 'flex', alignItems: 'center', gap: 6, padding: '3px 6px',
+        display: 'flex', alignItems: 'center', gap: 6, padding: '4px 6px',
         borderRadius: 4, cursor: 'pointer',
         background: selectedId === f.id ? 'rgba(56,189,248,0.18)' : 'rgba(255,255,255,0.04)',
-        borderLeft: `3px solid ${_PHASE_COLOR[f.phase] || '#6070a0'}`, marginBottom: 3,
+        borderLeft: `3px solid ${_PHASE_COLOR[f.phase] || '#8b9bb4'}`, marginBottom: 3,
       }}>
-      <span style={{ fontWeight: 700, fontSize: 11, color: '#e8edf4', width: 46 }}>{f.callsign}</span>
-      <span style={{ fontSize: 9.5, color: '#e8edf4', fontFamily: 'monospace', width: 32 }}>{_fmtSched(f.schedIso) || '—'}</span>
-      <span style={{ fontSize: 10, color: '#93a3b8', width: 30 }}>{f.assigned_gate || '—'}</span>
-      <span style={{ fontSize: 8, color: _PHASE_COLOR[f.phase] || '#6070a0', fontWeight: 600, letterSpacing: 0.3, whiteSpace: 'nowrap', marginLeft: 'auto' }}>
+      <span className="mono" style={{ fontWeight: 600, fontSize: 11, color: '#e8edf4', width: 46 }}>{f.callsign}</span>
+      {/* was 9.5px — under the 12px floor is bad enough without also being a
+          fractional size that renders inconsistently across browsers */}
+      <span className="mono" style={{ fontSize: 10, color: '#e8edf4', width: 34 }}>{_fmtSched(f.schedIso) || '—'}</span>
+      <span style={{ fontSize: 10, color: '#a3b1c6', width: 30 }}>{f.assigned_gate || '—'}</span>
+      <span style={{ fontSize: 9, color: _PHASE_COLOR[f.phase] || '#8b9bb4', fontWeight: 600, letterSpacing: 0.3, whiteSpace: 'nowrap', marginLeft: 'auto' }}>
         {_PHASE_LABEL[f.phase] || f.phase}
       </span>
     </div>
@@ -1135,7 +1327,7 @@ function FlightBoard({ posList, flights, selectedId, onSelect }) {
 
   return (
     <div style={{
-      position: 'absolute', top: 92, right: 14, width: 224, maxHeight: '62vh',
+      position: 'absolute', top: 14, right: 14, width: 224, maxHeight: '62vh',
       overflowY: 'auto', background: 'rgba(10,16,28,0.86)',
       border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, padding: '10px 12px',
       backdropFilter: 'blur(6px)', pointerEvents: 'auto',
@@ -1144,12 +1336,12 @@ function FlightBoard({ posList, flights, selectedId, onSelect }) {
         ▼ ARRIVING · {arriving.length}
       </div>
       {arriving.length ? arriving.map(Row)
-        : <div style={{ fontSize: 10, color: '#6070a0', marginBottom: 4 }}>none on ground</div>}
+        : <div style={{ fontSize: 10, color: '#94a3b8', marginBottom: 4 }}>none on ground</div>}
       <div style={{ fontSize: 10, letterSpacing: 1, margin: '10px 0 6px', color: '#fbbf24' }}>
         ▲ DEPARTING · {departing.length}
       </div>
       {departing.length ? departing.map(Row)
-        : <div style={{ fontSize: 10, color: '#6070a0' }}>none on ground</div>}
+        : <div style={{ fontSize: 10, color: '#94a3b8' }}>none on ground</div>}
     </div>
   );
 }

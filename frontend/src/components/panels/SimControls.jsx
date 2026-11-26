@@ -3,23 +3,12 @@ import { useSimStore } from '../../store/useSimStore';
 
 const SPEEDS = [1, 2, 4, 8];
 
-// Hidden for now — the app always runs at 1x (arrival/departure scheduling
-// assumes a fixed real-time-matching clock; see project notes on the
-// sim-time-vs-wall-clock drift this caused when speed was ever changed).
-// Flip back to true to restore the UI once that's revisited.
+// Speed/pause control is GONE, not just hidden. Positions are computed by a separate
+// process (the generator job) that this app cannot pause or re-clock — the old
+// POST /api/sim endpoint was removed with the split. A control that silently did
+// nothing would be worse than none. The array + flag stay only so the layout below is
+// easy to restore if the generator ever exposes its own control channel.
 const SHOW_SPEED_CONTROLS = false;
-
-async function postSim(body) {
-  try {
-    await fetch('/api/sim', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-  } catch (e) {
-    // WS sim_tick will still reflect authoritative state
-  }
-}
 
 export default function SimControls() {
   const visualSpeed    = useSimStore((s) => s.visualSpeed);
@@ -44,7 +33,7 @@ export default function SimControls() {
         <Plane size={20} className="accent" />
         <div>
           <div style={{ fontSize: 15, fontWeight: 700, lineHeight: 1 }}>
-            HIA Simulator
+            Airport Operations
           </div>
           <div className="muted" style={{ fontSize: 10 }}>
             Hamad International · OTHH
@@ -60,7 +49,7 @@ export default function SimControls() {
           {SPEEDS.map((sp) => (
             <button
               key={sp}
-              onClick={() => { postSim({ speed: sp }); setVisualSpeed(sp); }}
+              onClick={() => setVisualSpeed(sp)}
               className="card"
               style={{
                 minWidth: 38,

@@ -1,40 +1,26 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { CalendarClock, PlaneLanding, PlaneTakeoff } from 'lucide-react';
 import { useSimStore } from '../store/useSimStore';
+import { API_STATUS_LABEL, departureDisplayStatus } from '../lib/flightStatus.js';
+import { PAGE_BG, BOARD_PANEL, ROW_RULE, HEAD_COLOR, STATUS_COLOR, BoardLogo } from '../components/boardTheme.jsx';
 
 const POLL_MS = 15000;
 
+// Board-style column grids (same columns as before, in the same order).
+const IN_COLS = '84px 72px minmax(70px, 1fr) 54px 66px 104px 96px 44px';
+const OUT_COLS = '84px 72px minmax(70px, 1fr) 54px 66px 56px 104px';
+const LOGO = { width: 76, height: 34 };
+const ROW_PAD = '8px 16px';
+
 const connectionColor = (min) => (min < 45 ? '#ef4444' : min < 90 ? '#f59e0b' : '#22c55e');
 
-// The single, real-world flight status from AeroDataBox (flight.api_status) —
-// this is what the schedule shows (the sim's own animation phase drives only the
-// 3D map, not this list). Full observed vocabulary from the live DOH feed:
-// CheckIn, Boarding, GateClosed, Departed, Expected, Delayed, Arrived, Canceled,
-// Unknown (+ Diverted per the docs). Each maps to a readable label + colour.
-const API_STATUS_LABEL = {
-  CheckIn: 'CHECK-IN', Boarding: 'BOARDING', GateClosed: 'GATE CLOSED',
-  Departed: 'DEPARTED', Expected: 'EXPECTED', Delayed: 'DELAYED',
-  Arrived: 'LANDED', Approaching: 'APPROACHING', Diverted: 'DIVERTED',
-  Canceled: 'CANCELLED', Cancelled: 'CANCELLED', Unknown: 'SCHEDULED',
-};
-const API_STATUS_COLOR = {
-  CheckIn: '#6070a0', Boarding: '#4ade80', GateClosed: '#f59e0b',
-  Departed: '#64748b', Expected: '#38bdf8', Delayed: '#f97316',
-  Arrived: '#22c55e', Approaching: '#38bdf8', Diverted: '#ef4444',
-  Canceled: '#ef4444', Cancelled: '#ef4444', Unknown: '#6070a0',
-};
 function ApiStatusBadge({ status }) {
   if (!status) return null;
-  const color = API_STATUS_COLOR[status] ?? '#6070a0';
   const label = API_STATUS_LABEL[status] ?? status.toUpperCase();
   return (
-    <span
-      title="Real-world status (AeroDataBox)"
-      style={{
-        fontSize: 10, fontWeight: 700, letterSpacing: 0.4, textTransform: 'uppercase',
-        color, border: `1px solid ${color}55`, borderRadius: 4, padding: '2px 7px',
-      }}
-    >
+    <span title="Real-world status (AeroDataBox)"
+          style={{ fontSize: 12, fontWeight: 700, letterSpacing: 0.5, whiteSpace: 'nowrap',
+                   color: STATUS_COLOR[status] ?? '#ffffff' }}>
       {label}
     </span>
   );
@@ -44,17 +30,6 @@ async function fetchSchedule() {
   const res = await fetch('/api/schedule');
   if (!res.ok) throw new Error(`schedule fetch failed: ${res.status}`);
   return res.json();
-}
-
-function fmtCountdown(seconds) {
-  if (seconds == null) return '—';
-  if (seconds <= 0) return 'now';
-  const totalMin = Math.max(1, Math.round(seconds / 60));
-  const h = Math.floor(totalMin / 60);
-  const m = totalMin % 60;
-  if (h === 0) return `${m} min${m === 1 ? '' : 's'}`;
-  if (m === 0) return `${h} hour${h === 1 ? '' : 's'}`;
-  return `${h} hour${h === 1 ? '' : 's'} ${m} min${m === 1 ? '' : 's'}`;
 }
 
 function fmtClock(iso) {
@@ -84,19 +59,26 @@ function arrivalEtaIso(flight) {
   return new Date(new Date(flight.scheduled_arr).getTime() + 5 * 60000).toISOString();
 }
 
-function SectionHeader({ icon, title, count }) {
+function SectionHeader({ icon, title, count, cols, headings }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}>
-      {icon}
-      <span style={{ fontWeight: 700, fontSize: 13 }}>{title}</span>
-      <span className="muted" style={{ fontSize: 11 }}>({count})</span>
-    </div>
+    <>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 16px', borderBottom: ROW_RULE }}>
+        {icon}
+        <span style={{ fontWeight: 800, fontSize: 20, color: '#fff', letterSpacing: 0.5 }}>{title}</span>
+        <span style={{ fontSize: 13, color: HEAD_COLOR, fontWeight: 600 }}>({count})</span>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: cols, gap: 10, alignItems: 'center',
+                    padding: '6px 16px', fontSize: 10, fontWeight: 700, letterSpacing: 1,
+                    color: HEAD_COLOR, borderBottom: ROW_RULE }}>
+        {headings.map((h, i) => <span key={i}>{h}</span>)}
+      </div>
+    </>
   );
 }
 
 function EmptyHint({ text }) {
   return (
-    <div className="muted" style={{ padding: '20px 8px', fontSize: 12 }}>
+    <div style={{ padding: '20px 16px', fontSize: 13, color: HEAD_COLOR }}>
       {text}
     </div>
   );
@@ -108,7 +90,7 @@ function ConnectionDots({ connections }) {
       <span
         style={{
           width: 10, height: 10, borderRadius: '50%',
-          background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.15)',
+          background: 'rgba(255,255,255,0.10)', border: '1px solid rgba(190,210,255,0.35)',
           flexShrink: 0, display: 'inline-block',
         }}
       />
@@ -165,45 +147,54 @@ function InboundRow({ flight, now, connections, expanded, onToggle }) {
   const displayStatus = flight.phase ? 'Arrived' : flight.api_status;
 
   return (
+    // Keyboard-operable disclosure row: it was a bare <div onClick>, so it was
+    // unreachable by Tab and invisible to assistive tech. role="button" +
+    // tabIndex + Enter/Space + aria-expanded make it behave like the control it
+    // already looked like.
     <div
-      className="card"
+      className="row-interactive fids-row"
+      role="button"
+      tabIndex={0}
+      aria-expanded={expanded}
+      aria-label={`Flight ${flight.callsign} from ${flight.origin}, ${connections.length} onward connections`}
       style={{
-        padding: '10px 14px',
-        cursor: 'pointer',
-        borderLeft: expanded ? '3px solid var(--accent-blue)' : '3px solid transparent',
-        background: expanded ? 'rgba(56,189,248,0.08)' : undefined,
+        padding: ROW_PAD, borderBottom: ROW_RULE, color: '#fff', cursor: 'pointer',
+        background: expanded ? 'rgba(255,255,255,0.12)' : 'transparent',
       }}
       onClick={onToggle}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggle(); }
+      }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap', rowGap: 6 }}>
-        <div style={{ width: 60, fontWeight: 700 }}>{flight.callsign}</div>
-        <div className="muted" style={{ width: 42 }}>{flight.origin}</div>
-        <div className="muted" style={{ width: 64 }}>{flight.aircraft_type}</div>
-        <div className="muted" style={{ width: 64 }}>{flight.assigned_gate ? `Gate ${flight.assigned_gate}` : ''}</div>
-        <div style={{ width: 92 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: IN_COLS, gap: 10, alignItems: 'center', minWidth: 0 }}>
+        <BoardLogo code={flight.airline} {...LOGO} />
+        <div style={{ fontSize: 16, fontWeight: 700 }}>{flight.callsign}</div>
+        <div style={{ fontSize: 15, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{flight.origin_name || flight.origin}</div>
+        <div style={{ fontSize: 13, color: HEAD_COLOR }}>{flight.aircraft_type}</div>
+        <div style={{ fontSize: 14, fontWeight: 600 }}>{flight.assigned_gate ? `Gate ${flight.assigned_gate}` : ''}</div>
+        <div>
           <ApiStatusBadge status={displayStatus} />
         </div>
-        <div style={{ width: 110, fontFamily: 'monospace', fontSize: 12 }}>
+        <div className="mono" style={{ fontSize: 15, fontWeight: 600, whiteSpace: 'nowrap' }}>
           {eta.clock}
           {eta.minutesLabel && (
-            <span className="muted" style={{ marginLeft: 5, fontSize: 10 }}>({eta.minutesLabel})</span>
+            <span style={{ marginLeft: 5, fontSize: 11, color: HEAD_COLOR }}>({eta.minutesLabel})</span>
           )}
         </div>
-        <div style={{ flex: 1 }} />
         <ConnectionDots connections={connections} />
       </div>
 
       {expanded && (
-        <div style={{ marginTop: 10, borderTop: '1px solid var(--border)', paddingTop: 10 }}>
+        <div style={{ marginTop: 8, borderTop: ROW_RULE, paddingTop: 8 }}>
           {connections.length === 0 && (
-            <div className="muted" style={{ fontSize: 11 }}>
+            <div style={{ fontSize: 12, color: HEAD_COLOR }}>
               No outbound connections for this flight.
             </div>
           )}
           {connections.map((c) => (
             <div
               key={c.id}
-              style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '4px 0', fontSize: 11, flexWrap: 'wrap' }}
+              style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '4px 0', fontSize: 12, flexWrap: 'wrap' }}
             >
               <span
                 style={{
@@ -212,9 +203,9 @@ function InboundRow({ flight, now, connections, expanded, onToggle }) {
                 }}
               />
               <span style={{ fontWeight: 700, width: 64 }}>{c.callsign}</span>
-              <span className="muted" style={{ width: 46 }}>→ {c.destination}</span>
-              <span className="muted" style={{ width: 60 }}>Gate {c.assigned_gate}</span>
-              <span className="muted" style={{ width: 60 }}>{fmtClock(c.scheduled_dep)}</span>
+              <span style={{ color: HEAD_COLOR, width: 46 }}>→ {c.destination}</span>
+              <span style={{ color: HEAD_COLOR, width: 60 }}>Gate {c.assigned_gate}</span>
+              <span style={{ color: HEAD_COLOR, width: 60 }}>{fmtClock(c.scheduled_dep)}</span>
               <span style={{ color: connectionColor(c.connectionMinutes), fontWeight: 600 }}>
                 {Math.round(c.connectionMinutes)} min
               </span>
@@ -227,49 +218,27 @@ function InboundRow({ flight, now, connections, expanded, onToggle }) {
 }
 
 function OutboundRow({ flight, now, highlighted, faded }) {
-  const depMs = new Date(flight.scheduled_dep).getTime();
-  const countdownSec = flight.status === 'SCHEDULED' ? Math.max(0, (depMs - now) / 1000) : null;
-
-  // Display-status progression for a departure (all display-only, never written
-  // to the DB), in precedence order:
-  //   already departed (RUNWAY / real Departed)      → keep real api_status
-  //   GATE CLOSED  — within 2 min of dep, OR taxiing out / holding short
-  //   BOARDING     — otherwise, once it's on the map (has a sim phase, e.g.
-  //                  GATE_PARKED sitting at its stand)
-  //   else         → the raw api_status (still SCHEDULED, not yet on the map)
-  const taxiing = ['TAXIING_OUT', 'HOLDING_SHORT'].includes(flight.phase);
-  const within2min = depMs - now <= 2 * 60 * 1000 && depMs - now >= 0;
-  const alreadyGone = flight.phase === 'RUNWAY' || (flight.api_status || '').toLowerCase() === 'departed';
-  const onMap = !!flight.phase;  // has a sim phase → placed on the map
-  let displayStatus = flight.api_status;
-  if (!alreadyGone) {
-    if (taxiing || within2min) displayStatus = 'GateClosed';
-    else if (onMap) displayStatus = 'Boarding';
-  }
+  const displayStatus = departureDisplayStatus(flight, now);
 
   return (
     <div
-      className="card"
       style={{
-        padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap', rowGap: 6,
-        borderLeft: highlighted ? '3px solid var(--accent-blue)' : '3px solid transparent',
-        background: highlighted ? 'rgba(56,189,248,0.08)' : undefined,
+        padding: ROW_PAD, display: 'grid', gridTemplateColumns: OUT_COLS, gap: 10, alignItems: 'center', minWidth: 0,
+        borderBottom: ROW_RULE, color: '#fff',
+        background: highlighted ? 'rgba(255,255,255,0.12)' : 'transparent',
         opacity: faded ? 0.35 : 1,
         transition: 'opacity 0.15s ease',
       }}
     >
-      <div style={{ width: 70, fontWeight: 700 }}>{flight.callsign}</div>
-      <div className="muted" style={{ width: 46 }}>→ {flight.destination}</div>
-      <div className="muted" style={{ width: 64 }}>{flight.aircraft_type}</div>
-      <div className="muted" style={{ width: 64 }}>{flight.assigned_gate ? `Gate ${flight.assigned_gate}` : '—'}</div>
-      <div style={{ width: 70, fontFamily: 'monospace', fontSize: 12 }}>{fmtClock(flight.scheduled_dep)}</div>
-      <div style={{ flex: 1 }} />
-      {countdownSec != null && (
-        <span className="muted" style={{ fontSize: 11, fontFamily: 'monospace' }}>
-          in {fmtCountdown(countdownSec)}
-        </span>
-      )}
-      <ApiStatusBadge status={displayStatus} />
+      <BoardLogo code={flight.airline} {...LOGO} />
+      <div style={{ fontSize: 16, fontWeight: 700 }}>{flight.callsign}</div>
+      <div style={{ fontSize: 15, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>→ {flight.destination_name || flight.destination}</div>
+      <div style={{ fontSize: 13, color: HEAD_COLOR }}>{flight.aircraft_type}</div>
+      <div style={{ fontSize: 14, fontWeight: 600 }}>{flight.assigned_gate ? `Gate ${flight.assigned_gate}` : '—'}</div>
+      <div className="mono" style={{ fontSize: 15, fontWeight: 600 }}>{fmtClock(flight.scheduled_dep)}</div>
+      <div style={{ textAlign: 'right' }}>
+        <ApiStatusBadge status={displayStatus} />
+      </div>
     </div>
   );
 }
@@ -346,29 +315,27 @@ export default function ConnectionsPage() {
   );
 
   return (
-    <div style={{ height: '100%', width: '100%', overflow: 'auto', background: 'var(--bg-base)' }}>
+    <div style={{ height: '100%', width: '100%', overflow: 'auto', background: PAGE_BG }}>
       <div
-        className="panel"
         style={{
           height: 56, display: 'flex', alignItems: 'center', padding: '0 16px',
-          borderRadius: 0, borderLeft: 'none', borderRight: 'none', borderTop: 'none',
-          position: 'sticky', top: 0, zIndex: 1,
+          position: 'sticky', top: 0, zIndex: 1, background: PAGE_BG, borderBottom: ROW_RULE, color: '#fff',
         }}
       >
-        <CalendarClock size={20} className="accent" />
+        <CalendarClock size={22} color="#fff" />
         <div style={{ marginLeft: 10 }}>
-          <div style={{ fontSize: 15, fontWeight: 700, lineHeight: 1 }}>Schedule</div>
-          <div className="muted" style={{ fontSize: 10 }}>
+          <div style={{ fontSize: 17, fontWeight: 800, lineHeight: 1 }}>Schedule</div>
+          <div style={{ fontSize: 11, color: HEAD_COLOR }}>
             Incoming arrivals &amp; outbound connections
           </div>
         </div>
         <div style={{ flex: 1 }} />
         <div
-          className="card"
           title="Live flights from AeroDataBox — refreshes hourly; each flight activates at its real scheduled time."
           style={{
             display: 'flex', alignItems: 'center', gap: 8, height: 30, padding: '0 14px',
-            fontWeight: 700, fontSize: 12,
+            fontWeight: 700, fontSize: 12, color: '#fff', borderRadius: 6,
+            border: '1px solid rgba(160,190,255,0.35)', background: 'rgba(255,255,255,0.06)',
           }}
         >
           <span
@@ -385,13 +352,14 @@ export default function ConnectionsPage() {
       <div
         style={{
           padding: 16, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16,
-          maxWidth: 1400, margin: '0 auto',
+          maxWidth: 1600, margin: '0 auto', alignItems: 'start',
         }}
       >
-        <div>
-          <SectionHeader icon={<PlaneLanding size={14} />} title="Incoming" count={inbound.length} />
+        <div style={BOARD_PANEL}>
+          <SectionHeader icon={<PlaneLanding size={22} color="#fff" />} title="Incoming" count={inbound.length}
+                         cols={IN_COLS} headings={['', 'FLIGHT', 'FROM', 'TYPE', 'GATE', 'STATUS', 'TIME', 'CONN']} />
           {inbound.length === 0 && <EmptyHint text="Waiting for live arrivals from AeroDataBox…" />}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div>
             {inbound.map((f) => (
               <InboundRow
                 key={f.id}
@@ -405,10 +373,11 @@ export default function ConnectionsPage() {
           </div>
         </div>
 
-        <div>
-          <SectionHeader icon={<PlaneTakeoff size={14} />} title="Outgoing" count={outbound.length} />
+        <div style={BOARD_PANEL}>
+          <SectionHeader icon={<PlaneTakeoff size={22} color="#fff" />} title="Outgoing" count={outbound.length}
+                         cols={OUT_COLS} headings={['', 'FLIGHT', 'TO', 'TYPE', 'GATE', 'TIME', 'STATUS']} />
           {outbound.length === 0 && <EmptyHint text="Waiting for live departures from AeroDataBox…" />}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div>
             {outbound.map((f) => (
               <OutboundRow
                 key={f.id}

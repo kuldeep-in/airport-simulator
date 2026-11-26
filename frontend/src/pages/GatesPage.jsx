@@ -3,6 +3,7 @@ import { DoorOpen } from 'lucide-react';
 import { useSimStore } from '../store/useSimStore';
 import { GATE_LONLAT } from '../data/gateData.js';
 import { utilization24h } from '../lib/gateStats.js';
+import { PAGE_BG } from '../components/boardTheme.jsx';
 
 const POLL_MS = 15000;
 
@@ -15,6 +16,9 @@ const ALL_GATE_IDS = Object.keys(GATE_LONLAT).sort((a, b) => {
 });
 
 const STATUS_COLOR = { AVAILABLE: '#22c55e', OCCUPIED: '#fbbf24' };
+// Unknown-status fallback. Was #6070a0 at only 3.17:1 on --bg-card, below the AA
+// 4.5:1 floor for the 10px status text it colours.
+const STATUS_FALLBACK = '#8b9bb4';
 const CAPACITY_LABEL = { NARROW: 'Narrow-body', WIDE: 'Wide-body', A380: 'A380/Jumbo' };
 
 async function fetchGates() {
@@ -45,22 +49,31 @@ function GateRow({ gate, now, expanded, onToggle }) {
   // as requiring an actual `current` record, and default history to [].
   const history = gate.history ?? [];
   const isOccupied = gate.status === 'OCCUPIED' && gate.current != null;
-  const color = STATUS_COLOR[gate.status] ?? '#6070a0';
+  const color = STATUS_COLOR[gate.status] ?? STATUS_FALLBACK;
   const sinceMs = gate.current?.occupied_from ? new Date(gate.current.occupied_from).getTime() : null;
 
   return (
+    // Same keyboard-operable disclosure treatment as the Schedule rows: this was
+    // a bare <div onClick>, unreachable by keyboard and unannounced to screen
+    // readers despite being the page's primary interaction.
     <div
-      className="card"
+      className="card row-interactive"
+      role="button"
+      tabIndex={0}
+      aria-expanded={expanded}
+      aria-label={`Gate ${gate.id}, ${gate.status.toLowerCase()}${isOccupied ? `, occupied by ${gate.current.flight_id}` : ''}`}
       style={{
         padding: '10px 14px',
-        cursor: 'pointer',
         borderLeft: expanded ? '3px solid var(--accent-blue)' : '3px solid transparent',
         background: expanded ? 'rgba(56,189,248,0.08)' : undefined,
       }}
       onClick={onToggle}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggle(); }
+      }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap', rowGap: 6 }}>
-        <div style={{ width: 46, fontWeight: 700 }}>{gate.id}</div>
+        <div className="mono" style={{ width: 46, fontWeight: 600 }}>{gate.id}</div>
         <div className="muted" style={{ width: 100, fontSize: 11 }}>
           {CAPACITY_LABEL[gate.capacity_class] ?? gate.capacity_class}
         </div>
@@ -100,6 +113,15 @@ function GateRow({ gate, now, expanded, onToggle }) {
               style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '4px 0', fontSize: 11, flexWrap: 'wrap' }}
             >
               <span style={{ fontWeight: 700, width: 70 }}>{h.flight_id}</span>
+              <span
+                style={{
+                  width: 34, fontSize: 9, fontWeight: 700, letterSpacing: 0.5,
+                  color: h.direction === 'arrival' ? '#38bdf8' : '#fbbf24',
+                }}
+                title={h.direction === 'arrival' ? 'Arrival' : 'Departure'}
+              >
+                {h.direction === 'arrival' ? 'ARR' : 'DEP'}
+              </span>
               <span className="muted" style={{ width: 90 }}>{fmtClock(h.occupied_from)}</span>
               <span className="muted">→</span>
               <span className="muted" style={{ width: 90 }}>{fmtClock(h.occupied_until)}</span>
@@ -164,10 +186,13 @@ export default function GatesPage() {
   );
   const occupiedCount = gateRows.filter((g) => g.status === 'OCCUPIED').length;
 
-  // Top 5 most-utilized gates over the last 24h.
+  // Top 5 most-utilized gates over the last 24h. Uses the SERVER-computed
+  // `utilization_pct` (all stays in the window), which fixes the old ~19% ceiling
+  // from the 5-stay display cap; falls back to the client calc for back-compat if
+  // the field is absent (older API).
   const topUtilized = useMemo(() => {
     return gateRows
-      .map((g) => ({ gate: g, pct: utilization24h(g, now) }))
+      .map((g) => ({ gate: g, pct: g.utilization_pct ?? utilization24h(g, now) }))
       .filter((x) => x.pct > 0)
       .sort((a, b) => b.pct - a.pct)
       .slice(0, 5);
@@ -194,7 +219,7 @@ export default function GatesPage() {
   );
 
   return (
-    <div style={{ height: '100%', width: '100%', overflow: 'auto', background: 'var(--bg-base)' }}>
+    <div style={{ height: '100%', width: '100%', overflow: 'auto', background: PAGE_BG }}>
       <div
         className="panel"
         style={{

@@ -16,7 +16,7 @@ from datetime import datetime, timezone, timedelta
 
 GST = timezone(timedelta(hours=3))
 
-# Wave centres in minutes-of-day GST (matches scheduler waves)
+# Wave centres in minutes-of-day GST (the airport's real daily traffic waves)
 WAVE_CENTERS = [2 * 60 + 45, 9 * 60 + 45 + 30, 15 * 60 + 45, 20 * 60 + 45]
 WAVE_SIGMA = 55.0  # minutes
 

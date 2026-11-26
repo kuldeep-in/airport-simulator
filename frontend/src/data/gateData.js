@@ -75,28 +75,6 @@ export const GATE_LONLAT = {
 export const GATE_POSITIONS = Object.fromEntries(
   Object.entries(GATE_LONLAT).map(([id, [lon, lat]]) => [id, lonLatToWorld(lon, lat)])
 );
-
-// ── Wall-clearance distances (wu) — distance from centroid to outer building face ──
-export const SIGN_OFFSETS = {
-  A1: 1.45,  A10: 2.20,  A11: 3.20,  A3: 12.15, A4: 0.50,  A5: 4.05,
-  A6: 0.50,  A7: 6.25,  A8: 0.50,  A9: 2.15,
-  B1: 3.65,  B10: 1.40,  B2: 1.00,  B3: 14.40, B4: 1.00,  B5: 5.75,
-  B6: 0.95,  B7: 1.95,  B8: 1.50,  B9: 0.80,
-  C1: 0.70,  C10: 3.40,  C11: 1.60,  C12: 22.10, C13: 2.00,
-  C2: 9.20,
-  C3: 1.90,
-  C4: 8.10,
-  C5: 2.20,
-  C6: 7.45,
-  C7: 2.15,  C8: 7.30,
-  C14: 1.50,  C15: 1.50,  C16: 1.50,  C18: 1.50,  C19: 1.50,
-  C20: 1.50,  C22: 1.50,  C23: 1.50,  C24: 1.50,  C25: 1.50,  C26: 1.50,
-  D1: 10.25,  D2: 1.85,  D3: 18.70,  D4: 2.50,
-  D5: 1.50,   D6: 1.50,  D7: 1.50,  D8: 1.50,  D9: 1.50,
-  E1: 11.30,  E2: 1.30,  E3: 0.80,  E4: 1.55,
-  E5: 1.50,   E6: 1.50,  E7: 1.50,  E8: 1.50,
-};
-
 // ── Outward direction from building toward apron (unit vectors) ───────────────
 export const GATE_DIRS = {
   A1 : [ 1.00, 0,  0.00],

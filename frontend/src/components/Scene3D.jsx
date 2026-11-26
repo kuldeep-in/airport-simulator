@@ -1,6 +1,7 @@
 import { Suspense, useRef, useState, useCallback } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { MapControls } from '@react-three/drei';
+import { Spherical, Vector3 } from 'three';
 import Airport3D from './scene/Airport3D';
 import SimControls from './panels/SimControls';
 import LiveGatesBoard from './panels/LiveGatesBoard';
@@ -10,6 +11,11 @@ import CoordDisplay from './panels/CoordDisplay';
 import GateEditor from './panels/GateEditor';
 
 const BOUNDS = { minX: -200, maxX: 200, minZ: -180, maxZ: 150 };
+// Camera tilt (polar angle from straight down). Shared by MapControls' limits and the
+// tilt buttons, so mouse and buttons agree on the range.
+const TILT_MAX = Math.PI * 0.42;          // ~75° — stops short of the horizon
+const TILT_3D = Math.PI * 0.3;            // the "3D" preset (~54°)
+const TILT_STEP = Math.PI / 12;           // 15° per tilt-button press
 
 // Shows a lat/lon label once the user clicks the ground/apron (see
 // AirportGround.jsx's onClick -> setMapClickCoord).
@@ -41,14 +47,20 @@ function PanLimiter({ controlsRef }) {
   return null;
 }
 
-function AzimuthSync({ controlsRef, onAzimuth }) {
+function AzimuthSync({ controlsRef, onAzimuth, onTilt }) {
   const last = useRef(0);
+  const lastTilt = useRef(0);
   useFrame(() => {
     if (!controlsRef.current) return;
     const a = controlsRef.current.getAzimuthalAngle();
     if (Math.abs(a - last.current) > 0.002) {
       last.current = a;
       onAzimuth(a);
+    }
+    const p = controlsRef.current.getPolarAngle();
+    if (onTilt && Math.abs(p - lastTilt.current) > 0.01) {
+      lastTilt.current = p;
+      onTilt(p);
     }
   });
   return null;
@@ -71,7 +83,7 @@ const BTN = {
   lineHeight: 1,
 };
 
-function NorthCompass({ azimuth, onRotateLeft, onRotateRight }) {
+function NorthCompass({ azimuth, tilt, onRotateLeft, onRotateRight, onTilt, onToggleView }) {
   const deg = -(azimuth * 180) / Math.PI;
   return (
     <div style={{
@@ -101,6 +113,16 @@ function NorthCompass({ azimuth, onRotateLeft, onRotateRight }) {
       </div>
 
       <button style={BTN} onClick={onRotateRight} title="Rotate right 45°">↻</button>
+
+      {/* Tilt: buttons for trackpads (mouse: right-drag, or Shift/⌘ + drag) */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginLeft: 4 }}>
+        <button style={BTN} onClick={() => onTilt(TILT_STEP)} title="Tilt more (towards the horizon)">⤒</button>
+        <button style={BTN} onClick={() => onTilt(-TILT_STEP)} title="Tilt less (towards top-down)">⤓</button>
+      </div>
+      <button style={{ ...BTN, width: 'auto', padding: '0 10px', fontSize: 11, fontWeight: 700, letterSpacing: '0.06em' }}
+              onClick={onToggleView} title="Switch between top-down and 3D view">
+        {tilt > 0.05 ? 'TOP' : '3D'}
+      </button>
     </div>
   );
 }
@@ -109,6 +131,7 @@ function NorthCompass({ azimuth, onRotateLeft, onRotateRight }) {
 export default function Scene3D() {
   const controlsRef = useRef();
   const [azimuth, setAzimuth] = useState(0);
+  const [tilt, setTilt] = useState(0);
   const [showGateEditor, setShowGateEditor] = useState(false);
 
   const rotateMap = useCallback((delta) => {
@@ -121,6 +144,20 @@ export default function Scene3D() {
     const c = Math.cos(delta), s = Math.sin(delta);
     cam.position.x = tgt.x + dx * c - dz * s;
     cam.position.z = tgt.z + dx * s + dz * c;
+    controls.update();
+  }, []);
+
+  // Tilt the camera around the target (keeps azimuth and distance), clamped to the
+  // same range MapControls enforces. `absolute` jumps straight to a polar angle.
+  const tiltMap = useCallback((delta, absolute = null) => {
+    const controls = controlsRef.current;
+    if (!controls) return;
+    const cam = controls.object;
+    const off = new Vector3().subVectors(cam.position, controls.target);
+    const sph = new Spherical().setFromVector3(off);
+    sph.phi = Math.max(0.001, Math.min(TILT_MAX, absolute ?? sph.phi + delta));
+    off.setFromSpherical(sph);
+    cam.position.copy(controls.target).add(off);
     controls.update();
   }, []);
 
@@ -150,14 +187,17 @@ export default function Scene3D() {
           target={[0, 0, 0]}
           minZoom={0.5}
           maxZoom={30}
-          minPolarAngle={0.001}
-          maxPolarAngle={0.001}
+          // Tilt is free between straight-down and ~75° (right-drag / two-finger drag);
+          // azimuth rotates freely and with the compass ↺/↻ buttons. Was pinned to
+          // 0.001 rad (top-down only), which locked the view direction.
+          minPolarAngle={0}
+          maxPolarAngle={TILT_MAX}
           dampingFactor={0.08}
           enableDamping
           screenSpacePanning={false}
         />
         <PanLimiter controlsRef={controlsRef} />
-        <AzimuthSync controlsRef={controlsRef} onAzimuth={setAzimuth} />
+        <AzimuthSync controlsRef={controlsRef} onAzimuth={setAzimuth} onTilt={setTilt} />
       </Canvas>
 
       {/* ── HUD overlays ── */}
@@ -219,7 +259,14 @@ export default function Scene3D() {
         azimuth={azimuth}
         onRotateLeft={() => rotateMap(Math.PI / 4)}
         onRotateRight={() => rotateMap(-Math.PI / 4)}
+        tilt={tilt}
+        onTilt={(d) => tiltMap(d)}
+        onToggleView={() => tiltMap(0, tilt > 0.05 ? 0.001 : TILT_3D)}
       />
+      <div style={{ position: 'absolute', bottom: 16, left: '50%', transform: 'translateX(-50%)', zIndex: 20, fontSize: 10.5, color: '#94a3b8',
+                    background: 'rgba(8,14,28,0.7)', padding: '3px 8px', borderRadius: 6, pointerEvents: 'none' }}>
+        drag = pan · right-drag or Shift/⌘ + drag = rotate &amp; tilt · scroll = zoom
+      </div>
     </div>
   );
 }

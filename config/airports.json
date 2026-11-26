@@ -1,0 +1,19 @@
+{
+  "_comment": "Airport registry. One entry per airport this backend serves. `schema` is the UC schema (in the bundle's catalog) that holds the airport's raw volume, bronze/silver tables and the synced Lakebase table; `hub` is the fallback airline IATA when the feed omits one. The app + generator pick an airport via env AIRPORT_IATA (default DOH) - see server/airports.py. The per-airport jobs/pipelines live in resources/airport_<iata>.yml. NOTE: only DOH has simulation geometry (taxiways/gates in data/); other airports are ingest-only until their geodata is added.",
+  "DOH": {
+    "iata": "DOH", "icao": "OTHH",
+    "name": "Hamad International", "city": "Doha", "country": "Qatar",
+    "tz": "Asia/Qatar", "tz_abbr": "AST",
+    "center": [51.611, 25.266],
+    "hub": "QR",
+    "schema": "airport_simulator_doh"
+  },
+  "LHR": {
+    "iata": "LHR", "icao": "EGLL",
+    "name": "London Heathrow", "city": "London", "country": "United Kingdom",
+    "tz": "Europe/London", "tz_abbr": "UK",
+    "center": [-0.4543, 51.4700],
+    "hub": "BA",
+    "schema": "airport_simulator_lhr"
+  }
+}

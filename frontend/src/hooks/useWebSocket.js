@@ -23,7 +23,6 @@ export function useWebSocket() {
     const {
       setWsConnected,
       updateFlights,
-      updateGates,
       updateZoneMetrics,
       updateSensorReadings,
       setSimControls,
@@ -54,9 +53,6 @@ export function useWebSocket() {
             break;
           case 'aircraft_update':
             if (msg.flights) updateFlights(msg.flights);
-            break;
-          case 'gate_update':
-            if (msg.gates) updateGates(msg.gates);
             break;
           case 'zone_metric':
             if (msg.zones) updateZoneMetrics(msg.zones);
