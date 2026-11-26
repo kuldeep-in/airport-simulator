@@ -12,24 +12,29 @@ boots without a database.
 
 import os
 import asyncio
-import time
 from typing import Optional
 
 import asyncpg
 
-from server.config import get_oauth_token, get_lakebase_token, get_secret_value, IS_DATABRICKS_APP
+from server.config import (get_secret_value,
+                           IS_MANAGED_RUNTIME)
 
 TOKEN_REFRESH_SECONDS = 45 * 60
 _SECRETS_SCOPE = "airport-sim"
 
 
 def _resolve_pg_var(env_key: str, secret_key: str, default: str) -> str:
-    """Return env var value, falling back to Databricks Secrets API if the
-    value looks like an unresolved template ({{...}}) or is empty."""
+    """Return env var value, falling back to the Databricks Secrets API if the value
+    looks like an unresolved template ({{...}}) or is empty.
+
+    IS_MANAGED_RUNTIME (app OR job), not IS_DATABRICKS_APP: the generator runs as a
+    Databricks JOB, which gets no PG* env vars at all. Gating this on the app flag left
+    the job with no password → demo mode → nothing published to Lakebase, so the app's
+    map stayed empty with a dead feed."""
     val = os.environ.get(env_key, "")
     if val and not val.startswith("{{"):
         return val
-    if IS_DATABRICKS_APP:
+    if IS_MANAGED_RUNTIME:
         fetched = get_secret_value(_SECRETS_SCOPE, secret_key)
         if fetched:
             return fetched
@@ -38,8 +43,9 @@ def _resolve_pg_var(env_key: str, secret_key: str, default: str) -> str:
 
 LAKEBASE_INSTANCE = "airport-simulator-db"
 LAKEBASE_DATABASE = "hia_sim"
-# Known host for this demo instance — used as fallback when env vars not injected.
-LAKEBASE_HOST = "ep-example-0000.database.eastus.azuredatabricks.net"
+# No hardcoded host: it's resolved from env PGHOST or the `lakebase-host` secret (the repo
+# is public, so infra endpoints stay out of it). Empty → the pool can't connect → demo mode.
+LAKEBASE_HOST = ""
 
 
 class DatabasePool:
@@ -138,16 +144,6 @@ class DatabasePool:
             return None
         async with pool.acquire() as conn:
             return await conn.fetchval(sql, *args)
-
-    async def run_script(self, sql_script: str):
-        """Run a multi-statement DDL script."""
-        if self._demo_mode:
-            return
-        pool = await self.get_pool()
-        if pool is None:
-            return
-        async with pool.acquire() as conn:
-            await conn.execute(sql_script)
 
     async def close(self):
         if self._pool is not None:

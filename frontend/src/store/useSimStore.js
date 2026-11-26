@@ -11,6 +11,12 @@ export const useSimStore = create((set) => ({
   zoneMetrics: {}, // zone_id -> { PAX_DENSITY, TEMPERATURE }
   sensorReadings: {}, // sensor_id -> { sensor_id, lon, lat, temperature, pax_density }
 
+  // Liveness of the POSITION GENERATOR — a separate process (a continuous Databricks
+  // job) that writes positions to Lakebase; this app only reads them. If it dies, the
+  // last positions stay in the table and the map would show frozen aircraft as if
+  // they were live, so the UI surfaces this instead. null = not yet known.
+  feed: null, // { alive, age_seconds, tick_count, live_flights, ... }
+
   // UI
   selectedEntity: null, // { type: 'gate'|'aircraft', id }
   mapClickCoord: null,  // { lon, lat } strings from last map click
@@ -54,18 +60,6 @@ export const useSimStore = create((set) => ({
       }
       return { flights, positions };
     }),
-
-  updateGates: (list) =>
-    set((s) => {
-      const gates = { ...s.gates };
-      for (const g of list) {
-        gates[g.id] = { ...gates[g.id], ...g };
-      }
-      return { gates };
-    }),
-
-  updatePositions: (map) =>
-    set((s) => ({ positions: { ...s.positions, ...map } })),
 
   updateZoneMetrics: (map) =>
     set((s) => {
@@ -138,6 +132,7 @@ export const useSimStore = create((set) => ({
         gates,
         zoneMetrics,
         sensorReadings,
+        feed: msg.feed ?? null,
         simTime: msg.sim_time,
         simSpeed: msg.speed,
         simPaused: msg.paused,

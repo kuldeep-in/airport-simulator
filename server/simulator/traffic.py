@@ -61,13 +61,18 @@ SEP_M = 60.0
 HARD_M = 30.0
 # Sample step (m) when sweeping a flight's proposed advance for conflicts.
 _SWEEP_M = 15.0
-# Anti-deadlock: on a genuine single-lane HEAD-ON or CROSSING conflict, holding
-# both flights forever is a permanent freeze (worse than the old occasional clip).
-# If a flight is blocked purely by a CONFLICTING (non-following) flight for this
-# many consecutive ticks, it breaks through this tick — accepting a transient close
-# pass so traffic always eventually flows. Same-direction FOLLOWING never triggers
-# this (holding behind a stopped leader is correct), so a queue still waits properly.
-_HEADON_STALL_TICKS = 8
+# Anti-deadlock / SELF-HEAL: holding two stuck aircraft forever is a permanent
+# freeze. If a flight is blocked purely by BREAKABLE blockers for this many
+# consecutive ticks, it breaks through this tick — passing only NOT-yet-committed
+# flights so a pile separates FRONT-FIRST instead of stepping forward in lockstep.
+# A blocker is "breakable" when it is either
+#   * a CONFLICT   — head-on / crossing (heading diff > _CONFLICT_DEG), or
+#   * an OVERLAP   — another aircraft co-located within HARD_M (any heading), which
+#                    same-direction following separation can NEVER dig out of and so
+#                    would otherwise freeze forever (the arrival-pile failure mode).
+# A normal same-direction follower held at a REAL gap (HARD_M..SEP_M) is NOT
+# breakable, so a healthy queue still waits behind its leader and never barges.
+_STUCK_STALL_TICKS = 8
 # Heading-difference (deg) above which two flights count as a CONFLICT (head-on or
 # crossing) rather than same-direction following — used both to decide when the
 # break-through applies and which blocks accumulate the stall counter. A pure
@@ -84,9 +89,10 @@ _positions: dict[str, tuple[float, float, str, float]] = {}
 # only respects the HARD_M anti-overlap floor, so the higher-priority flight
 # passes as far as it can and the lower-priority one yields on its own turn.
 _committed: set[str] = set()
-# fid -> consecutive ticks it has been blocked purely by an OPPOSING flight.
-# Persists across ticks (NOT cleared in begin_tick) to drive head-on break-through.
-_headon_stall: dict[str, int] = {}
+# fid -> consecutive ticks it has been blocked purely by BREAKABLE blockers
+# (a head-on/crossing conflict, or a hard co-located overlap). Persists across ticks
+# (NOT cleared in begin_tick) to drive the self-healing break-through.
+_stuck_stall: dict[str, int] = {}
 
 
 def _haversine_m(p0, p1) -> float:
@@ -151,15 +157,17 @@ def _forward_offset(lat, lon, hdg, olat, olon):
     return fx * deast + fy * dnorth
 
 
-def _clear_at(fid, lat, lon, hdg, ignore_headon=False):
+def _clear_at(fid, lat, lon, hdg, ignore_stuck=False):
     """Check candidate point (lat,lon,hdg) against every other registered flight.
 
-    Returns (ok, blocked_by_conflict):
-      * ok               — True if the point keeps required separation.
-      * blocked_by_conflict — True if the ONLY thing blocking it is a CONFLICTING
-        (head-on OR crossing — heading diff > _CONFLICT_DEG) flight. Same-direction
-        following blocks set this False. Drives the anti-deadlock break-through in
-        step().
+    Returns (ok, blocked_only_by_breakable):
+      * ok — True if the point keeps required separation.
+      * blocked_only_by_breakable — True if EVERY blocker is a "breakable" one: a
+        CONFLICT (head-on/crossing, heading diff > _CONFLICT_DEG) OR a hard OVERLAP
+        (another flight within HARD_M — essentially co-located, which same-direction
+        following separation cannot resolve). A normal same-direction follower held
+        at a real gap (HARD_M..SEP_M) is NOT breakable, so this stays False and a
+        healthy queue keeps waiting rather than driving the break-through in step().
 
     Required gap depends on priority:
       * vs a flight ALREADY ADVANCED this tick (higher priority, in `_committed`):
@@ -167,9 +175,13 @@ def _clear_at(fid, lat, lon, hdg, ignore_headon=False):
       * vs a NOT-yet-advanced flight (lower priority): only the HARD_M anti-overlap
         floor, and only if it's ahead/abeam.
 
-    `ignore_headon=True` drops conflicting-flight constraints entirely (the
-    break-through path) so a stalled flight can pass a head-on/crossing lock."""
-    only_conflict = True
+    `ignore_stuck=True` is the SELF-HEAL break-through path: skip breakable blockers
+    (conflicts and hard overlaps) that are NOT yet committed this tick, so the
+    highest-priority flight in a jam advances out of the pile while the lower-priority
+    ones still yield to it (it's committed). Passing only not-yet-committed flights is
+    what makes a co-located, same-speed pile SEPARATE front-first instead of every
+    plane stepping forward together and staying stacked."""
+    only_breakable = True
     ok = True
     for other, (olat, olon, _ok, ohdg) in _positions.items():
         if other == fid:
@@ -177,17 +189,19 @@ def _clear_at(fid, lat, lon, hdg, ignore_headon=False):
         fwd = _forward_offset(lat, lon, hdg, olat, olon)
         dist = _haversine_m((lat, lon), (olat, olon))
         conflict = abs((hdg - ohdg + 180) % 360 - 180) > _CONFLICT_DEG
-        if conflict and ignore_headon:
-            continue  # break-through: don't let a head-on/crossing flight block me
+        overlap = dist < HARD_M          # co-located — pathological at ANY heading
+        breakable = conflict or overlap
+        if ignore_stuck and breakable and other not in _committed:
+            continue  # break-through: pass a not-yet-committed conflicting/overlapping flight
         if other in _committed:
             violated = (fwd >= -1.0 and dist < SEP_M) or (-SEP_M <= fwd < -1.0 and dist < HARD_M)
         else:
             violated = fwd >= -1.0 and dist < HARD_M
         if violated:
             ok = False
-            if not conflict:
-                only_conflict = False  # a same-direction following block => don't break through
-    return ok, (not ok and only_conflict)
+            if not breakable:
+                only_breakable = False  # a real same-direction following gap => keep queuing
+    return ok, (not ok and only_breakable)
 
 
 def step(fid, path, cum, cur, proposed, kind, enforce=True) -> float:
@@ -202,30 +216,33 @@ def step(fid, path, cum, cur, proposed, kind, enforce=True) -> float:
     registers the footprint so taxiing traffic near the runway gives way."""
     if len(path) < 2 or not enforce or proposed <= cur:
         committed = proposed
-        _headon_stall.pop(fid, None)
+        _stuck_stall.pop(fid, None)
     else:
-        # If this flight has been stalled purely by a head-on/crossing conflict for
-        # too many ticks, break through this tick (ignore conflicting flights) so a
-        # 2-body head-on or crossing lock can never freeze traffic permanently.
-        breakthrough = _headon_stall.get(fid, 0) >= _HEADON_STALL_TICKS
+        # SELF-HEAL: if this flight has been stalled purely by BREAKABLE blockers (a
+        # head-on/crossing conflict, or a co-located hard overlap) for too many ticks,
+        # break through this tick. The break-through passes only NOT-yet-committed
+        # flights (see _clear_at), so the highest-priority plane in a pile advances
+        # out while the rest still yield to it — a same-direction stack that ordinary
+        # separation can never dig out of therefore dissolves front-first.
+        breakthrough = _stuck_stall.get(fid, 0) >= _STUCK_STALL_TICKS
         committed = cur
         n = max(1, int((proposed - cur) / _SWEEP_M))
         step_len = (proposed - cur) / n
-        stalled_headon = False
+        stalled_breakable = False
         for k in range(1, n + 1):
             cand = cur + step_len * k
             lat, lon, hdg = _position_at(path, cum, cand)
-            ok, headon = _clear_at(fid, lat, lon, hdg, ignore_headon=breakthrough)
+            ok, breakable = _clear_at(fid, lat, lon, hdg, ignore_stuck=breakthrough)
             if ok:
                 committed = cand
             else:
-                stalled_headon = headon
+                stalled_breakable = breakable
                 break  # blocked — hold at the last clear sample
-        # track consecutive head-on stalls (reset once it actually moves freely)
-        if committed <= cur + 1e-6 and stalled_headon and not breakthrough:
-            _headon_stall[fid] = _headon_stall.get(fid, 0) + 1
+        # track consecutive breakable-only stalls (reset once it actually moves freely)
+        if committed <= cur + 1e-6 and stalled_breakable and not breakthrough:
+            _stuck_stall[fid] = _stuck_stall.get(fid, 0) + 1
         else:
-            _headon_stall.pop(fid, None)
+            _stuck_stall.pop(fid, None)
     lat, lon, hdg = _position_at(path, cum, committed)
     _positions[fid] = (lat, lon, kind, hdg)
     _committed.add(fid)  # now higher-priority than any flight not yet advanced
@@ -236,4 +253,4 @@ def clear(fid: str) -> None:
     """Drop a flight's registration (e.g. when it leaves the ground/roster)."""
     _positions.pop(fid, None)
     _committed.discard(fid)
-    _headon_stall.pop(fid, None)
+    _stuck_stall.pop(fid, None)

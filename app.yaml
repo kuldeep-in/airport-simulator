@@ -19,6 +19,23 @@ env:
     value: "{{secrets/airport-sim/lakebase-password}}"
   - name: PGPORT
     value: "5432"
+  # 0 = startup NEVER calls AeroDataBox; it resumes from the Lakebase payload
+  # cache (flight_feed_cache) or the persisted flight_schedule dataset. Set back
+  # to 1 to let a restart fetch a fresh window when the current 4h slot is
+  # uncached. The scheduled slot-boundary refresh still fetches either way.
+  - name: AIRPORT_SIM_STARTUP_API
+    value: "0"
+  # The simulation runs INSIDE this app as a supervised child process (cost: no separate
+  # 24/7 generator job). 0 = app only (then run generator.py as a job instead).
+  - name: RUN_GENERATOR
+    value: "1"
+  # Which registry airport (config/airports.json) this app + its generator serve.
+  - name: AIRPORT_IATA
+    value: "DOH"
+  # Genie space behind the "Ask Genie" tab (server/genie.py), queried as the app's
+  # service principal. Permissions: resources/app.yml (genie_space / sql_warehouse / tables).
+  - name: GENIE_SPACE_ID
+    valueFrom: genie-space        # the app's genie_space resource (resources/app.yml)
 
 resources:
   - name: airport-simulator-db

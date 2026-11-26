@@ -4,7 +4,19 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <title>HIA Simulator — Hamad International Airport</title>
+    <!-- "Dashboard Data" pairing: Fira Code for numerics/tabular readouts, Fira
+         Sans for labels. Declared here rather than as a CSS @import because an
+         @import placed after Vite's @tailwind directives gets dropped at build
+         time, and because preconnect lets the font fetch start in parallel with
+         the stylesheet instead of waiting on it. Only the weights actually used
+         are requested. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Fira+Sans:wght@300;400;500;600;700&display=swap"
+    />
+    <title>Airport Operations</title>
   </head>
   <body>
     <div id="root"></div>

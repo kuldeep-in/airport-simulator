@@ -1,0 +1,82 @@
+# SYSTEM B — the Databricks App. Reads Lakebase, broadcasts over WebSocket, serves the UI,
+# and (RUN_GENERATOR=1 in app.yaml) runs the simulation as a supervised child process.
+# app.yaml (command/env) + app.py stay at the bundle root: the app's source is the
+# uploaded bundle root (see the `databricks apps deploy --source-code-path` step).
+resources:
+  apps:
+    airport-simulator:
+      # NOT prefixed: this is the app's identity — the deploy command and the live
+      # URL both use it. Renaming would create a second app and orphan this one.
+      name: airport-simulator
+      description: HIA Real-Time Simulator — UI (reads positions from Lakebase)
+      source_code_path: /Workspace/Users/${workspace.current_user.userName}/airport-simulator
+      # The generator runs as this app's child process and lands its telemetry minute
+      # files (sensors/, events/) via the Files API as the app's service principal.
+      resources:
+        - name: raw-telemetry-doh
+          description: Generator telemetry landing zone (sensor readings + sim events)
+          uc_securable:
+            securable_full_name: ${var.catalog}.airport_simulator_doh.raw_telemetry
+            securable_type: VOLUME
+            permission: WRITE_VOLUME
+        # "Ask Genie" tab: run the space, use its warehouse, read the tables it queries
+        # (the synced flight tables it uses today + the Delta tables it can move to).
+        - name: genie-space
+          genie_space:
+            name: Airport Flight Schedule Overview for DOH and LHR
+            space_id: ${resources.genie_spaces.airport_genie.id}
+            permission: CAN_RUN
+        - name: genie-warehouse
+          sql_warehouse:
+            id: ${var.warehouse_id}
+            permission: CAN_USE
+        - name: tbl-synced-doh
+          uc_securable:
+            securable_full_name: ${var.catalog}.airport_simulator_doh.flight_schedule_doh
+            securable_type: TABLE
+            permission: SELECT
+        - name: tbl-silver-cur-doh
+          uc_securable:
+            securable_full_name: ${var.catalog}.airport_simulator_doh.silver_flight_schedule_doh
+            securable_type: TABLE
+            permission: SELECT
+        - name: tbl-silver-hist-doh
+          uc_securable:
+            securable_full_name: ${var.catalog}.airport_simulator_doh.silver_flight_schedule_history_doh
+            securable_type: TABLE
+            permission: SELECT
+        - name: tbl-sensors-doh
+          uc_securable:
+            securable_full_name: ${var.catalog}.airport_simulator_doh.sensor_readings_doh
+            securable_type: TABLE
+            permission: SELECT
+        - name: tbl-events-doh
+          uc_securable:
+            securable_full_name: ${var.catalog}.airport_simulator_doh.sim_events_doh
+            securable_type: TABLE
+            permission: SELECT
+        - name: tbl-synced-lhr
+          uc_securable:
+            securable_full_name: ${var.catalog}.airport_simulator_lhr.flight_schedule_lhr
+            securable_type: TABLE
+            permission: SELECT
+        - name: tbl-silver-cur-lhr
+          uc_securable:
+            securable_full_name: ${var.catalog}.airport_simulator_lhr.silver_flight_schedule_lhr
+            securable_type: TABLE
+            permission: SELECT
+        - name: tbl-silver-hist-lhr
+          uc_securable:
+            securable_full_name: ${var.catalog}.airport_simulator_lhr.silver_flight_schedule_history_lhr
+            securable_type: TABLE
+            permission: SELECT
+        - name: tbl-sensors-lhr
+          uc_securable:
+            securable_full_name: ${var.catalog}.airport_simulator_lhr.sensor_readings_lhr
+            securable_type: TABLE
+            permission: SELECT
+        - name: tbl-events-lhr
+          uc_securable:
+            securable_full_name: ${var.catalog}.airport_simulator_lhr.sim_events_lhr
+            securable_type: TABLE
+            permission: SELECT

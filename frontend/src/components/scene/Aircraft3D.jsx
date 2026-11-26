@@ -31,6 +31,23 @@ const AIRLINE_LIVERY = {
   QP: { body: '#1c6ba0', tail: '#e9552a', text: '#5aa0d0', textOutline: '#04152b' }, // (Akasa-style teal/orange)
   XY: { body: '#0a6b3b', tail: '#c8a02a', text: '#2ea56a', textOutline: '#04220f' }, // flynas (green/gold)
   WB: { body: '#0a6b5a', tail: '#c8a02a', text: '#2ea58f', textOutline: '#04221c' }, // RwandAir
+  // European carriers (OSL / AGP + majors)
+  SK: { body: '#0a3a6b', tail: '#0a2f55', text: '#4a90d9', textOutline: '#04152b' }, // SAS
+  DY: { body: '#c8102e', tail: '#8a0020', text: '#e05a6e', textOutline: '#2b0006' }, // Norwegian
+  WF: { body: '#0a7d4a', tail: '#075a36', text: '#2ea56a', textOutline: '#04220f' }, // Widerøe
+  VY: { body: '#e0a800', tail: '#1a2b4a', text: '#e0a800', textOutline: '#1a1400' }, // Vueling
+  IB: { body: '#c8102e', tail: '#e0a800', text: '#e05a6e', textOutline: '#2b0006' }, // Iberia
+  UX: { body: '#0a3a7a', tail: '#0a2f55', text: '#5a8fd9', textOutline: '#04152b' }, // Air Europa
+  FR: { body: '#0a3d91', tail: '#f1c40f', text: '#5a8fd9', textOutline: '#04152b' }, // Ryanair
+  U2: { body: '#ee6100', tail: '#d1560a', text: '#f08a3a', textOutline: '#2b1400' }, // easyJet
+  W6: { body: '#c2168c', tail: '#8a0f63', text: '#d06ab0', textOutline: '#2b0020' }, // Wizz Air
+  LH: { body: '#05164d', tail: '#e0b000', text: '#5a8fd9', textOutline: '#020a24' }, // Lufthansa
+  BA: { body: '#1d3d78', tail: '#c8102e', text: '#6a90c8', textOutline: '#0a1830' }, // British Airways
+  AF: { body: '#0a2d6b', tail: '#c8102e', text: '#5a8fd9', textOutline: '#04152b' }, // Air France
+  KL: { body: '#0a6ba8', tail: '#0a4a78', text: '#5aa0d0', textOutline: '#04152b' }, // KLM
+  TP: { body: '#0a6b3b', tail: '#c8102e', text: '#2ea56a', textOutline: '#04220f' }, // TAP
+  AY: { body: '#0a3a8a', tail: '#0a2f66', text: '#5a8fd9', textOutline: '#04152b' }, // Finnair
+  LX: { body: '#c8102e', tail: '#8a0020', text: '#e05a6e', textOutline: '#2b0006' }, // Swiss
 };
 
 // Deterministic fallback colour for airlines not in the table: hash the IATA

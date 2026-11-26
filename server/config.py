@@ -5,6 +5,21 @@ from databricks.sdk import WorkspaceClient
 
 IS_DATABRICKS_APP = bool(os.environ.get("DATABRICKS_APP_NAME"))
 
+# True inside a Databricks JOB (the position generator — see generator.py), which is a
+# different runtime from a Databricks App: no DATABRICKS_APP_NAME, but the ambient
+# credentials a bare WorkspaceClient() needs are still present.
+IS_DATABRICKS_JOB = bool(
+    os.environ.get("DB_IS_DRIVER")
+    or os.environ.get("DATABRICKS_RUNTIME_VERSION")
+    or os.environ.get("SPARK_HOME")
+)
+
+# Either managed runtime: credentials are ambient, and Secrets must be fetched via the
+# API rather than read from env vars. Gating secret access on IS_DATABRICKS_APP alone
+# silently pushed the generator job into demo mode (no PGPASSWORD → no Lakebase → it
+# had nowhere to publish), which is exactly the failure this distinction prevents.
+IS_MANAGED_RUNTIME = IS_DATABRICKS_APP or IS_DATABRICKS_JOB
+
 
 def get_workspace_client():
     """Return a WorkspaceClient.
@@ -13,20 +28,10 @@ def get_workspace_client():
     environment, so a bare WorkspaceClient() auto-configures. Locally we fall
     back to the named CLI profile.
     """
-    if IS_DATABRICKS_APP:
+    if IS_MANAGED_RUNTIME:
+        # App OR job: credentials are injected into the environment.
         return WorkspaceClient()
     return WorkspaceClient(profile=os.environ.get("DATABRICKS_PROFILE", "fevm01"))
-
-
-def get_oauth_token():
-    """Return a bearer token string suitable for Lakebase / serving endpoints.
-
-    We use config.authenticate() rather than config.token because the token
-    attribute is None for OAuth / U2M auth flows.
-    """
-    client = get_workspace_client()
-    auth = client.config.authenticate()
-    return auth.get("Authorization", "").replace("Bearer ", "")
 
 
 def get_workspace_host():
@@ -60,39 +65,3 @@ def get_secret_value(scope: str, key: str) -> str:
         print(f"[config] secret {scope}/{key} error: {e}")
     return ""
 
-
-def get_lakebase_token(instance_name: str) -> str:
-    """Get a Lakebase-specific JWT for Provisioned Tier database connections.
-
-    Lakebase rejects plain workspace bearer tokens — a proper JWT must be minted
-    via POST /api/2.0/database-credentials. On failure, logs the error and raises
-    so the caller can fall to demo mode rather than silently use a bad token.
-    """
-    host = get_workspace_host()
-    # Use M2M token from the service principal credentials
-    import time as _time
-    request_id = f"hia-sim-{int(_time.time())}"
-    try:
-        w = get_workspace_client()
-        auth_header = w.config.authenticate()
-        resp = requests.post(
-            f"{host}/api/2.0/database/credentials",
-            headers={**auth_header, "Content-Type": "application/json"},
-            json={"request_id": request_id, "instance_names": [instance_name]},
-            timeout=15,
-        )
-        print(f"[config] database-credentials status: {resp.status_code}")
-        if resp.ok and resp.text:
-            data = resp.json()
-            token = data.get("token", "")
-            if token:
-                print(f"[config] Lakebase JWT obtained (len={len(token)}).")
-                return token
-            print(f"[config] No token in response: {list(data.keys())}")
-        else:
-            print(f"[config] database-credentials error: {resp.status_code} {resp.text[:300]}")
-    except Exception as e:  # noqa: BLE001
-        print(f"[config] database-credentials exception: {e}")
-    # Raise so the pool builder catches it and logs properly rather than
-    # connecting with a token Lakebase will reject.
-    raise RuntimeError("Could not obtain Lakebase JWT — check service principal permissions.")

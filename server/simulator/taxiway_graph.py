@@ -44,6 +44,12 @@ _ROLLOUT_M = 2200.0  # typical landing-roll + runway-exit distance before joinin
 _ROLLOUT_SNAP_M = 80.0  # touchdown must be within this of a runway centerline to get a rollout at all
 _MIN_EXIT_ANGLE_DEG = 75.0  # reject shallow/near-parallel connectors — real turnoffs are close to perpendicular
 _MIN_EXIT_SEPARATION_M = 80.0  # taxiway nodes within this of each other are the same physical exit, not distinct ones
+# Weight (metres) added to a graph edge when another flight is already taxiing it
+# in the OPPOSING direction (see route_reservations.py). Far larger than any real
+# route (~4-9 km) so Dijkstra prefers ANY clear alternative, yet finite — a
+# genuinely single-lane against-traffic segment is still routable rather than
+# failing (traffic.py stays the runtime backstop). Soft, not a hard ban.
+_AVOID_PENALTY_M = 50_000.0
 
 
 def _world_to_lonlat(x: float, z: float) -> tuple[float, float]:
@@ -112,10 +118,12 @@ class TaxiwayGraph:
     def load(self) -> None:
         if self._loaded:
             return
-        with open(_WAYS_PATH) as f:
+        path = _WAYS_PATH
+        with open(path) as f:
             ways = json.load(f)
+        # hiaWays.json is already in world units (10 m, origin at CENTER).
         for way in ways:
-            pts = way["p"]
+            pts = [(x, z) for x, z in way["p"]]
             is_runway = way.get("t") == "runway"
             if is_runway:
                 self._runways.append([(x, z) for x, z in pts])
@@ -135,7 +143,7 @@ class TaxiwayGraph:
             if ref and gate_end is not None:
                 self._gate_leadin_node[ref] = self._get_or_create_node(*gate_end)
         self._loaded = True
-        print(f"[taxiway_graph] loaded {len(self._node_xz)} nodes from {len(ways)} ways")
+        print(f"[taxiway_graph] loaded {len(self._node_xz)} nodes from {len(ways)} ways ({path})")
 
     def _nearest_node(self, x: float, z: float) -> int:
         best_id, best_d = -1, float("inf")
@@ -160,7 +168,8 @@ class TaxiwayGraph:
                 best_d, best_id = d, nid
         return best_id
 
-    def _dijkstra(self, src: int, dst: int, forbid_runway: bool = False) -> list[int] | None:
+    def _dijkstra(self, src: int, dst: int, forbid_runway: bool = False,
+                  avoid_edges: set[tuple[int, int]] | None = None) -> list[int] | None:
         dist = {src: 0.0}
         prev: dict[int, int] = {}
         pq = [(0.0, src)]
@@ -176,6 +185,12 @@ class TaxiwayGraph:
                 if forbid_runway and is_runway:
                     continue
                 nd = d + w
+                # Penalise (don't forbid) an edge another flight is taxiing the
+                # OPPOSING way, so the router steers around a head-on when it can
+                # but still finds a path when the against-traffic segment is the
+                # only option. See route_reservations.blocked_for().
+                if avoid_edges and (u, v) in avoid_edges:
+                    nd += _AVOID_PENALTY_M
                 if nd < dist.get(v, float("inf")):
                     dist[v] = nd
                     prev[v] = u
@@ -333,9 +348,16 @@ class TaxiwayGraph:
               heading_lonlat: tuple[float, float] | None = None,
               one_exit_further: bool = False,
               avoid_runway: bool = False,
-              gate_id: str | None = None):
+              gate_id: str | None = None,
+              avoid_edges: set[tuple[int, int]] | None = None,
+              return_nodes: bool = False):
         """Route from `start_lonlat` to `gate_lonlat`, returns [(lat, lon), ...]
         or None if routing failed (caller should fall back to a straight line).
+
+        `avoid_edges` (directed graph edges from route_reservations.blocked_for)
+        are penalised so the route steers clear of head-on traffic where it can.
+        `return_nodes=True` returns `(coords, node_path)` instead of just coords
+        (`(None, None)` on failure) — the node_path is the flight's reservation.
 
         If `heading_lonlat` (the next recorded point after touchdown, used only
         to tell which way down the runway the aircraft is travelling) is given
@@ -392,9 +414,10 @@ class TaxiwayGraph:
         # it's safe (and correct — planes taxi, they don't cruise the runway)
         # to forbid the route from using runway edges any further. Same forced
         # avoidance applies whenever the caller explicitly asks for it.
-        node_path = self._dijkstra(s_node, g_node, forbid_runway=forbid_runway)
+        node_path = self._dijkstra(s_node, g_node, forbid_runway=forbid_runway,
+                                   avoid_edges=avoid_edges)
         if node_path is None:
-            return None
+            return (None, None) if return_nodes else None
 
         for nid in node_path:
             nx, nz = self._node_xz[nid]
@@ -408,7 +431,139 @@ class TaxiwayGraph:
         # `gate_lonlat` coordinate.
         if leadin_node is None:
             out.append((gate_lonlat[1], gate_lonlat[0]))
+        return (out, node_path) if return_nodes else out
+
+    def _project_arc(self, pts, cum, wx, wz):
+        """Nearest point on a runway polyline to (wx,wz), returned as
+        (dist_m, seg_i, arclen_m, (px,pz)) or None. Shared by the fixed-exit roll."""
+        b = None
+        for i in range(len(pts) - 1):
+            x1, z1 = pts[i]; x2, z2 = pts[i + 1]
+            dx, dz = x2 - x1, z2 - z1; sl2 = dx * dx + dz * dz
+            if sl2 == 0:
+                continue
+            t = max(0.0, min(1.0, ((wx - x1) * dx + (wz - z1) * dz) / sl2))
+            px, pz = x1 + t * dx, z1 + t * dz
+            d = math.hypot(wx - px, wz - pz) * 10.0
+            if b is None or d < b[0]:
+                b = (d, i, cum[i] + t * math.hypot(dx, dz) * 10.0, (px, pz))
+        return b
+
+    def _roll_to_exit(self, touchdown_lonlat, heading_lonlat, exit_lonlat):
+        """Landing-roll centerline points from touchdown to the point on the runway
+        centerline ABEAM a fixed exit taxiway — used when every arrival must vacate at
+        one specific exit (see arrival_route(fixed_exit_lonlat=...)). Returns
+        [(lat,lon)...] exclusive of touchdown, inclusive of the abeam point (the
+        caller then adds the short turn-off onto the exit taxiway). None if the
+        touchdown isn't near a runway. `heading_lonlat` is unused here (the exit's own
+        position fixes the travel direction) but kept for signature symmetry."""
+        tx, tz = _lonlat_to_world(*touchdown_lonlat)
+        ex, ez = _lonlat_to_world(*exit_lonlat)
+        best = None
+        for pts in self._runways:
+            cum = [0.0]
+            for i in range(1, len(pts)):
+                cum.append(cum[-1] + math.hypot(pts[i][0] - pts[i - 1][0],
+                                                pts[i][1] - pts[i - 1][1]) * 10.0)
+            b = self._project_arc(pts, cum, tx, tz)
+            if b and (best is None or b[0] < best[0]):
+                best = (b[0], pts, cum, b)
+        if best is None or best[0] > _ROLLOUT_SNAP_M:
+            return None
+        _, pts, cum, tb = best
+        eb = self._project_arc(pts, cum, ex, ez)
+        if eb is None:
+            return None
+        td_seg, td_arc = tb[1], tb[2]
+        ex_seg, ex_arc, ex_pt = eb[1], eb[2], eb[3]
+        sign = 1.0 if ex_arc > td_arc else -1.0
+        rng = range(td_seg + 1, ex_seg + 1) if sign > 0 else range(td_seg, ex_seg, -1)
+        out = [(_world_to_lonlat(*pts[i])[1], _world_to_lonlat(*pts[i])[0]) for i in rng]
+        alon, alat = _world_to_lonlat(*ex_pt)
+        out.append((alat, alon))
         return out
+
+    def arrival_route(self, touchdown_lonlat, heading_lonlat, gate_lonlat,
+                      one_exit_further: bool = False, gate_id: str | None = None,
+                      avoid_edges: set[tuple[int, int]] | None = None,
+                      fixed_exit_lonlat: tuple[float, float] | None = None,
+                      via_lonlat: tuple[float, float] | None = None):
+        """Full ARRIVAL path: a real landing-roll down the runway centerline to an
+        exit, then taxiway pavement to the gate.
+
+        Unlike route(start, gate) with hand-placed straight exit/divert hops (which
+        cut across open ground between the runway and the taxiway network), this
+        stays ON drawn pavement the whole way after touchdown.
+
+        Two exit modes:
+          * `fixed_exit_lonlat` given → EVERY arrival vacates at that one exit taxiway
+            ("one exit for all"): roll the centerline to abeam the exit, a short
+            turn-off onto it, then taxi to the gate. Deterministic, so with the
+            single-arrival runway lock, landings space themselves one-after-another.
+          * else → `_rollout` picks a real (~90°) exit by distance (`one_exit_further`
+            rolls a heavy one exit further).
+
+        `heading_lonlat` tells the roll which way down the runway the aircraft goes.
+        Returns
+
+            (coords[(lat, lon)], node_path, rollout_index)
+
+        where `coords[rollout_index]` is the exit (end of the runway roll, start of
+        the taxi) so the caller derives the roll distance in its own path-cumulative
+        units. Returns (None, None, 0) if the touchdown isn't near a runway or the
+        taxi leg can't be routed (caller keeps the flight SCHEDULED and retries)."""
+        self.load()
+        if fixed_exit_lonlat is not None:
+            roll_pts = self._roll_to_exit(touchdown_lonlat, heading_lonlat, fixed_exit_lonlat)
+            if roll_pts is None:
+                return None, None, 0
+            # Taxi legs on pavement (runway HARD-forbidden). If a `via` waypoint is
+            # given, force exit A -> via B -> gate, each leg routed through the taxiway
+            # graph (NOT a straight line) — this pins arrivals onto the intended taxi
+            # path so they never re-cross the runway. Without a via: A -> gate direct.
+            waypoints = ([via_lonlat] if via_lonlat is not None else []) + [gate_lonlat]
+            legs, nodes_all = [], []
+            prev = fixed_exit_lonlat
+            for wp in waypoints:
+                gid = gate_id if wp is gate_lonlat else None  # gate lead-in only on the final leg
+                leg, leg_nodes = self.route(prev, wp, avoid_runway=True, gate_id=gid,
+                                            avoid_edges=avoid_edges, return_nodes=True)
+                if leg is None:
+                    return None, None, 0
+                legs.append(leg)
+                nodes_all += (leg_nodes or [])
+                prev = wp
+            roll_full = [(touchdown_lonlat[1], touchdown_lonlat[0])] + roll_pts
+            coords = list(roll_full)
+            for leg in legs:
+                for p in leg:  # de-dupe seams (exit / via appear at both leg ends)
+                    if abs(coords[-1][0] - p[0]) > 1e-9 or abs(coords[-1][1] - p[1]) > 1e-9:
+                        coords.append(p)
+            # rollout ends where the aircraft leaves the runway onto the exit taxiway.
+            rollout_index = len(roll_full)
+            return coords, nodes_all, rollout_index
+        rolled = self._rollout(touchdown_lonlat, heading_lonlat,
+                               one_exit_further=one_exit_further)
+        if rolled is None:
+            return None, None, 0
+        anchor_lonlat, rollout_pts = rolled
+        # touchdown + the centerline roll to the exit anchor, all (lat, lon).
+        roll_full = [(touchdown_lonlat[1], touchdown_lonlat[0])] + rollout_pts
+        # Taxi from the exit anchor (a real taxiway node) to the gate, on pavement
+        # (runway edges forbidden). avoid_edges steers around opposing traffic.
+        taxi_coords, taxi_nodes = self.route(
+            anchor_lonlat, gate_lonlat, avoid_runway=True, gate_id=gate_id,
+            avoid_edges=avoid_edges, return_nodes=True)
+        if taxi_coords is None:
+            return None, None, 0
+        # taxi_coords[0] is the anchor again — stitch on the rest, dropping any point
+        # that coincides with the previous one so there's no zero-length seam.
+        coords = list(roll_full)
+        for p in taxi_coords[1:]:
+            if abs(coords[-1][0] - p[0]) > 1e-9 or abs(coords[-1][1] - p[1]) > 1e-9:
+                coords.append(p)
+        rollout_index = len(roll_full) - 1  # anchor = last centerline point
+        return coords, taxi_nodes, rollout_index
 
 
 _graph = TaxiwayGraph()
@@ -418,8 +573,22 @@ def route(start_lonlat: tuple[float, float], gate_lonlat: tuple[float, float],
           heading_lonlat: tuple[float, float] | None = None,
           one_exit_further: bool = False,
           avoid_runway: bool = False,
-          gate_id: str | None = None):
-    return _graph.route(start_lonlat, gate_lonlat, heading_lonlat, one_exit_further, avoid_runway, gate_id)
+          gate_id: str | None = None,
+          avoid_edges: set[tuple[int, int]] | None = None,
+          return_nodes: bool = False):
+    return _graph.route(start_lonlat, gate_lonlat, heading_lonlat, one_exit_further,
+                        avoid_runway, gate_id, avoid_edges, return_nodes)
+
+
+def arrival_route(touchdown_lonlat: tuple[float, float], heading_lonlat: tuple[float, float],
+                  gate_lonlat: tuple[float, float], one_exit_further: bool = False,
+                  gate_id: str | None = None,
+                  avoid_edges: set[tuple[int, int]] | None = None,
+                  fixed_exit_lonlat: tuple[float, float] | None = None,
+                  via_lonlat: tuple[float, float] | None = None):
+    return _graph.arrival_route(touchdown_lonlat, heading_lonlat, gate_lonlat,
+                                one_exit_further, gate_id, avoid_edges, fixed_exit_lonlat,
+                                via_lonlat)
 
 
 # Real runway 34R threshold + far end (lon, lat), given directly — more

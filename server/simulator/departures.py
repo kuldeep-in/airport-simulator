@@ -33,15 +33,17 @@ import json
 import math
 import os
 import random
-from datetime import datetime
+from datetime import datetime, timedelta
 
-from server.db import db
 from server.simulator import gates
 from server.simulator import taxiway_graph
 from server.simulator import runway
-from server.simulator import live_schedule
 from server.simulator import flight_store
 from server.simulator import traffic
+from server.simulator import positions
+from server.simulator import route_reservations
+from server.simulator import turnarounds
+from server.simulator import sim_events
 
 _GATE_LONLAT_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "data", "gateLonLat.json")
 with open(_GATE_LONLAT_PATH) as _f:
@@ -84,16 +86,11 @@ _OVERFLOW_QUEUE_TRIGGER = 3        # 34R departures taxiing/holding before overf
 _OVERFLOW_ARRIVAL_GAP_SEC = 15 * 60.0  # required clear arrival window on 34L (15 min)
 
 
-def all_ids() -> list:
-    """Every flight_id currently in the live roster. Used to tell already-
-    connected clients to drop previous-window flights when the roster refreshes."""
-    return list(_roster.keys())
-
-
 # ── In-memory roster (live, refreshed hourly) + live-tick state ─────────────────
 _roster: dict[str, dict] = {}          # flight_id -> static metadata
 _scheduled_dep: dict[str, datetime] = {}  # flight_id -> absolute real departure time (from AeroDataBox)
 _path: dict[str, list] = {}            # flight_id -> [(lat, lon), ...] taxi-out + runway-roll track (built at activation)
+_route_nodes: dict[str, list[int]] = {}  # flight_id -> taxi-out Dijkstra node path, reserved at pushback (route_reservations)
 _cum_dist: dict[str, list] = {}
 _total_dist: dict[str, float] = {}
 _taxi_end_dist: dict[str, float] = {}  # cumulative metres where the taxiway portion ends and the runway segment begins
@@ -106,6 +103,8 @@ _progress: dict[str, float] = {}       # metres travelled along _path
 _runway: dict[str, str] = {}           # flight_id -> assigned takeoff runway ('34R' primary, '34L' overflow); chosen once at _activate_route
 _last_heading: dict[str, float] = {}   # flight_id -> last heading (deg) while ACTUALLY moving; frozen when stopped (e.g. HOLDING_SHORT) so a stationary plane keeps its taxi heading instead of a jittery per-tick segment bearing
 _api_gate: dict[str, str | None] = {}  # flight_id -> the real HIA gate the API reported (or None)
+_events: dict[str, dict[str, datetime]] = {}  # flight_id -> ACTUAL stage times observed this run (pushback/taxi/queue/hold/runway/airborne) — see timelines()
+_gate_at: dict[str, datetime] = {}  # flight_id -> when it appeared parked at its stand (GATE_PARKED) — the waterfall's AT GATE start
 
 
 def _haversine_m(p0, p1) -> float:
@@ -229,11 +228,13 @@ def _boarding_heading(fid: str) -> float:
 
 def _cleanup_after_finish(fid: str) -> None:
     """Drop the (now-irrelevant) live-tick progress for a departed flight, but
-    keep its entry in `_roster`/`_scheduled_dep` so schedule_info() can still
-    report it as DEPARTED until the next hourly refresh drops it from the
-    window."""
+    keep its entry in `_roster`/`_scheduled_dep` so sim_overlay() can still report
+    it as DEPARTED (and hand the board its real gate) until the next slot refresh
+    drops it from the window."""
     _progress.pop(fid, None)
     _last_heading.pop(fid, None)
+    _events.pop(fid, None)
+    _gate_at.pop(fid, None)
 
 
 async def load_roster() -> None:
@@ -249,6 +250,8 @@ async def load_roster() -> None:
     _api_gate.clear()
     _gate_park_lead.clear()
     _path.clear()
+    _route_nodes.clear()
+    route_reservations.clear_all()
     _cum_dist.clear()
     _total_dist.clear()
     _taxi_end_dist.clear()
@@ -260,12 +263,12 @@ async def load_roster() -> None:
     _last_heading.clear()
     _runway.clear()
 
-    for row in live_schedule.get_departures():
-        _add_departure(row)
-
+    # Roster content is NOT loaded here any more — see seed_runner.load_gate_positions.
+    # The generator pulls it from `flight_schedule` via broadcaster._pull_roster(), since
+    # the fetcher is a separate scheduled job and live_schedule's globals are empty here.
     ids = list(_roster.keys())
     if ids:
-        await db.execute("DELETE FROM live_positions WHERE flight_id = ANY($1)", ids)
+        await positions.remove_many(ids)
 
     print(f"[departures] live outbound roster loaded: {len(_roster)} flights.")
 
@@ -281,6 +284,9 @@ def _add_departure(row: dict) -> None:
         "origin":        "DOH",
         "destination":   row["destination"],
         "assigned_gate": None,  # claimed at gate-parking (from _api_gate, with fallback)
+        # Gate the sim used on a PREVIOUS run (persisted). Reused at activation so a
+        # reconstructed departure keeps its stand + taxi route after a restart/switch.
+        "sim_gate":      row.get("sim_gate"),
         "api_status":    row.get("api_status"),  # real-world status from AeroDataBox
     }
     _scheduled_dep[fid] = row["scheduled_utc"]
@@ -298,7 +304,8 @@ def _add_departure(row: dict) -> None:
 
 
 async def refresh_roster(new_departures: list[dict]) -> None:
-    """Hourly live refresh (called from live_schedule.run_loop): merge a fresh
+    """Merge a fresh departure window in (called from broadcaster._pull_roster, which
+    reads flight_schedule every 60s):
     departure window in, keyed by callsign. Flights already parked or moving
     (GATE_PARKED/ACTIVE/DONE/DEPARTED) are left untouched; still-SCHEDULED flights
     have their departure time + metadata + API gate updated; new callsigns are
@@ -313,7 +320,7 @@ async def refresh_roster(new_departures: list[dict]) -> None:
     dropped = [f for f, st in _state.items()
                if st in ("SCHEDULED", "DEPARTED") and f not in incoming]
     if dropped:
-        await db.execute("DELETE FROM live_positions WHERE flight_id = ANY($1)", dropped)
+        await positions.remove_many(dropped)
         for fid in dropped:
             _forget_departure(fid)
 
@@ -337,11 +344,12 @@ async def refresh_roster(new_departures: list[dict]) -> None:
 
 def _forget_departure(fid: str) -> None:
     """Remove all per-flight state for a flight (dropped from the window)."""
-    for d in (_roster, _scheduled_dep, _api_gate, _gate_park_lead, _path, _cum_dist,
-              _total_dist, _taxi_end_dist, _hold_dist, _runway_entered, _runway_released,
-              _state, _progress, _last_heading, _runway):
+    for d in (_roster, _scheduled_dep, _api_gate, _gate_park_lead, _path, _route_nodes,
+              _cum_dist, _total_dist, _taxi_end_dist, _hold_dist, _runway_entered,
+              _runway_released, _state, _progress, _last_heading, _runway, _events, _gate_at):
         d.pop(fid, None)
     traffic.clear(fid)
+    route_reservations.release(fid)
 
 
 def _rwy_is_clear(fid: str) -> bool:
@@ -364,19 +372,6 @@ def _rwy_release(fid: str) -> None:
     can never leak a lock."""
     runway.release(fid)
     runway.west_dep_release(fid)
-
-
-def _count_taxiing_to(runway_id: str, exclude_fid: str) -> int:
-    """How many departures are currently assigned `runway_id` and still
-    taxiing/holding toward it (ACTIVE but not yet cleared onto the runway).
-    Used to gauge 34R congestion before deciding to overflow a flight to 34L."""
-    n = 0
-    for other, st in _state.items():
-        if other == exclude_fid or st != "ACTIVE":
-            continue
-        if _runway.get(other, taxiway_graph.RUNWAY_34R) == runway_id and not _runway_entered.get(other, False):
-            n += 1
-    return n
 
 
 _rr_counter = 0  # round-robin toggle across the two 34R entry points
@@ -407,16 +402,25 @@ def _build_route_for_runway(fid: str, rwy: str) -> None:
     gate_lonlat = tuple(_GATE_LONLAT[gate_id][:2])  # (lon, lat) — entry is [lon, lat, heading]
 
     # Taxiway-only route from the gate to the pre-runway holding point — runway
-    # edges forbidden, so this leg can't cut across runway pavement.
-    route = taxiway_graph.route(gate_lonlat, taxiway_graph.departure_pre_runway_lonlat(rwy),
-                                avoid_runway=True)
+    # edges forbidden, so this leg can't cut across runway pavement. `avoid` steers
+    # around taxiway segments an arrival is currently taxiing the opposite way
+    # (head-on) where a clear alternative exists — see route_reservations.
+    avoid = route_reservations.blocked_for(fid)
+    route, route_nodes = taxiway_graph.route(
+        gate_lonlat, taxiway_graph.departure_pre_runway_lonlat(rwy),
+        avoid_runway=True, avoid_edges=avoid, return_nodes=True)
     if route is None and rwy != taxiway_graph.RUNWAY_34R:
         # Couldn't taxi to the overflow (34L) hold point — fall back to the
         # primary runway (34R) rather than risk a degenerate straight-line path.
         rwy = taxiway_graph.RUNWAY_34R
-        route = taxiway_graph.route(gate_lonlat, taxiway_graph.departure_pre_runway_lonlat(rwy),
-                                    avoid_runway=True)
+        route, route_nodes = taxiway_graph.route(
+            gate_lonlat, taxiway_graph.departure_pre_runway_lonlat(rwy),
+            avoid_runway=True, avoid_edges=avoid, return_nodes=True)
 
+    # Node path of the taxi-out leg, reserved at pushback (not here — a flight
+    # sits GATE_PARKED up to ~45 min before it actually moves; reserving that
+    # early would block those taxiways the whole time it's still parked).
+    _route_nodes[fid] = route_nodes or []
     _runway[fid] = rwy
     meta["runway"] = rwy  # surfaced to the frontend/schedule for visibility
 
@@ -460,7 +464,7 @@ def _build_route_for_runway(fid: str, rwy: str) -> None:
     _progress[fid] = 0.0
 
 
-def _activate_route(fid: str, now: datetime) -> bool:
+def _activate_route(fid: str, now: datetime, takeover_gate: str | None = None) -> bool:
     """At GATE_PARK time (~45 min before departure): claim the flight's real API
     gate (fall back to a random capacity-matched gate if it's taken or missing),
     then build a provisional taxi-out route to the PRIMARY runway (34R) so the
@@ -470,7 +474,15 @@ def _activate_route(fid: str, now: datetime) -> bool:
     early. Returns True if a gate was secured, False if none is free (caller
     keeps the flight SCHEDULED and retries)."""
     meta = _roster[fid]
-    gate_id = gates.claim_gate(_api_gate.get(fid), fid, now)
+    # Turnaround: the inbound aircraft's stand was just freed for us (see
+    # turnarounds.py) — take that exact gate. Otherwise prefer the gate this flight
+    # used before (persisted sim_gate) so a reconstructed departure keeps its stand +
+    # route; then the real API gate; then any free gate.
+    gate_id = gates.claim_gate(takeover_gate, fid, now) if takeover_gate else None
+    if gate_id is None:
+        gate_id = gates.claim_gate(meta.get("sim_gate"), fid, now)
+    if gate_id is None:
+        gate_id = gates.claim_gate(_api_gate.get(fid), fid, now)
     if gate_id is None:
         gate_id = gates.reserve_gate(gates.capacity_class_of(meta["aircraft_type"]), fid, now)
     meta["assigned_gate"] = gate_id
@@ -502,6 +514,32 @@ def register_traffic() -> None:
                                  _progress.get(fid, 0.0), "departure")
 
 
+# A departure whose pushback is more than this many seconds in the past is
+# RECONSTRUCTED (placed at its computed taxi-out position) rather than started from
+# the gate, so a restart / airport switch doesn't teleport it back to its stand.
+_RECONSTRUCT_AFTER_SEC = 120.0
+
+
+def _progress_after_seconds(fid: str, elapsed: float, total: float) -> float:
+    """Distance (m) along the taxi-out path after `elapsed` seconds of the departure
+    speed profile from progress 0 — used to RECONSTRUCT a departure that pushed back
+    in the past. Capped at `total`. (Ignores hold-queue waiting, so it's an upper
+    estimate; advance()'s ACTIVE branch re-clamps to the queue.)"""
+    if elapsed <= 0 or total <= 0:
+        return 0.0
+    step_m = 50.0
+    p, t = 0.0, 0.0
+    while p < total and t < elapsed:
+        spd = max(_target_speed_kt(fid, p) * KT_TO_MPS, 0.5)
+        dt_seg = step_m / spd
+        if t + dt_seg > elapsed:
+            p += spd * (elapsed - t)
+            break
+        p += step_m
+        t += dt_seg
+    return min(p, total)
+
+
 def advance(sim_time: datetime, tick_sec: float, speed: int) -> None:
     dt = tick_sec * speed  # tick_sec is the REAL elapsed wall-clock seconds (float)
     # LEADER-FIRST within the departure stream: process flights nearest the runway
@@ -528,8 +566,23 @@ def advance(sim_time: datetime, tick_sec: float, speed: int) -> None:
             # occupied — leaves it SCHEDULED, retrying next tick; never crashes.)
             lead = (_scheduled_dep[fid] - sim_time).total_seconds()
             if lead <= _gate_park_lead.get(fid, _GATE_PARK_LEAD_MAX_SEC):
-                if _activate_route(fid, sim_time):
+                # Configured turnaround (data/turnarounds.json): wait for the inbound
+                # aircraft to reach its stand, then take over THAT stand so one plane
+                # is shown, not two.
+                action, take_gate, arr_fid = turnarounds.departure_gate_action(fid, sim_time)
+                if action == "wait":
+                    continue
+                if action == "takeover":
+                    from server.simulator import seed_runner
+                    seed_runner.hand_over_to_departure(arr_fid, fid, sim_time)
+                if _activate_route(fid, sim_time, take_gate):
                     _state[fid] = "GATE_PARKED"
+                    _gate_at[fid] = sim_time
+                    print(f"[departures] {fid} AT GATE {_roster[fid].get('assigned_gate')} "
+                          f"(pushback {_scheduled_dep[fid]:%H:%M}Z, in {max(0.0, lead) / 60:.0f} min)")
+                    sim_events.emit("AT_GATE", fid, "departure", sim_time, _roster[fid],
+                                    scheduled_utc=_scheduled_dep[fid].isoformat(),
+                                    turnaround_from=arr_fid if action == "takeover" else None)
             continue
         if st == "GATE_PARKED":
             # Parked at the gate, visible, until its real departure time — then
@@ -543,22 +596,52 @@ def advance(sim_time: datetime, tick_sec: float, speed: int) -> None:
                 # queue: offline replay of the full feed drains all departures with
                 # a peak of ~20 concurrently taxiing and no permanent stall.
                 # Decide the takeoff runway NOW (at pushback), when 34R congestion
-                # and the arrival gap are real — not 45 min ago at gate-park. If
-                # overflow to 34L is warranted, rebuild the taxi route to it (the
-                # provisional route built at gate-park was to 34R).
+                # and the arrival gap are real — not 45 min ago at gate-park.
                 rwy = _choose_runway(fid, sim_time)
-                if rwy != _runway.get(fid, taxiway_graph.RUNWAY_34R):
-                    _build_route_for_runway(fid, rwy)
+                # Rebuild the taxi-out route AT PUSHBACK (superseding the provisional
+                # gate-park route) so it avoids arrivals taxiing the opposite way
+                # RIGHT NOW, then reserve its edges so later-planned routes avoid a
+                # head-on into it.
+                _build_route_for_runway(fid, rwy)
+                # RECONSTRUCT (B2): if pushback is well in the past (a restart/switch
+                # dropped this departure mid-taxi), place it at its computed taxi-out
+                # position instead of back at the gate. If it would already be airborne,
+                # retire it rather than re-taxi it.
+                elapsed = (sim_time - _scheduled_dep[fid]).total_seconds()
+                total = _total_dist.get(fid, 0.0)
+                progress = (_progress_after_seconds(fid, elapsed, total)
+                            if elapsed > _RECONSTRUCT_AFTER_SEC else 0.0)
+                if total > 0 and progress >= total:
+                    gates.release_gate(_roster[fid].get("assigned_gate"), sim_time, fid)
+                    route_reservations.release(fid)
+                    # DONE, not DEPARTED: tick() then deletes the position row it wrote
+                    # while GATE_PARKED (straight to DEPARTED left a ghost aircraft on
+                    # its — already re-bookable — stand until the stale-row sweep).
+                    _state[fid] = "DONE"
+                    print(f"[departures] {fid} retired — pushback {_scheduled_dep[fid]:%H:%M}Z "
+                          f"was {elapsed / 60:.0f} min ago, already airborne")
+                    continue
+                route_reservations.reserve(fid, _route_nodes.get(fid))
                 # The aircraft physically leaves the stand at pushback, so FREE the
-                # gate in the live occupancy registry NOW — not at takeoff. (It used
-                # to stay OCCUPIED through the entire taxi-out/roll, so a gate showed
-                # occupied by a plane already taxiing away.) Owner-guarded so it only
-                # frees the stand this flight actually holds. We keep meta[
-                # "assigned_gate"] as the DISPLAY value (the board still shows which
-                # gate it departed from) — only the registry occupancy is released.
+                # gate in the live occupancy registry NOW — not at takeoff. Owner-guarded
+                # so it only frees the stand this flight actually holds. meta[
+                # "assigned_gate"] is kept as the DISPLAY value (board still shows the
+                # departure gate) — only the registry occupancy is released.
                 gates.release_gate(_roster[fid].get("assigned_gate"), sim_time, fid)
-                _state[fid] = "ACTIVE"  # pushback starts now, from progress 0
-                _progress[fid] = 0.0
+                _state[fid] = "ACTIVE"
+                _progress[fid] = progress
+                # Pushback happens AT the scheduled time in this model, so that's the
+                # true pushback even for a reconstructed (mid-taxi) flight.
+                _events[fid] = {"pushback": _scheduled_dep[fid]}
+                print(f"[departures] {fid} PUSHBACK from {_roster[fid].get('assigned_gate')} → {rwy}, "
+                      f"taxi {_hold_dist.get(fid, 0.0):.0f} m"
+                      + (f" (resumed {elapsed / 60:.0f} min into taxi)" if progress > 0 else ""))
+                if progress <= 0:   # a restart's mid-taxi reconstruction isn't a real pushback
+                    sim_events.emit("PUSHBACK", fid, "departure", sim_time, _roster[fid], runway=rwy,
+                                    taxi_m=round(_hold_dist.get(fid, 0.0)))
+                if progress >= _CREEP_M:
+                    _events[fid]["taxi"] = _scheduled_dep[fid] + timedelta(
+                        seconds=_travel_sec(fid, 0.0, _CREEP_M))
             continue
         if st == "ACTIVE":
             total = _total_dist.get(fid, 0.0)
@@ -597,6 +680,7 @@ def advance(sim_time: datetime, tick_sec: float, speed: int) -> None:
 
                 if _progress[fid] >= stop_m:
                     _progress[fid] = stop_m   # clamp at this flight's queue slot
+                    _events.setdefault(fid, {}).setdefault("queue", sim_time)
                     # Only the front of the queue (nobody ahead) may take the
                     # runway, and only when the assigned runway's lock is clear.
                     # 34L departures share the ARRIVAL lock (west_dep_*), so they
@@ -604,6 +688,16 @@ def advance(sim_time: datetime, tick_sec: float, speed: int) -> None:
                     if ahead == 0 and _rwy_is_clear(fid):
                         _rwy_enter(fid)
                         _runway_entered[fid] = True
+                        ev_rw = _events.setdefault(fid, {})
+                        ev_rw.setdefault("runway", sim_time)
+                        waited = (sim_time - ev_rw["queue"]).total_seconds() if "queue" in ev_rw else 0.0
+                        print(f"[departures] {fid} CLEARED onto {_runway.get(fid)} "
+                              f"(waited {waited:.0f}s in queue/hold)")
+                        sim_events.emit("RUNWAY_ENTER", fid, "departure", sim_time, _roster[fid],
+                                        runway=_runway.get(fid), queue_wait_s=round(waited))
+                        # Onto the runway now — off the taxiways, so free its taxi
+                        # reservation for other flights being routed.
+                        route_reservations.release(fid)
 
             # Heading bookkeeping below uses the committed position.
             clat, clon, seg_heading = _position_at(fid, _progress[fid])
@@ -623,6 +717,15 @@ def advance(sim_time: datetime, tick_sec: float, speed: int) -> None:
             elif fid not in _last_heading:
                 _last_heading[fid] = seg_heading  # first tick, before any motion
 
+            # Stage events for the departure-queue waterfall (first time only).
+            ev = _events.setdefault(fid, {})
+            if _progress[fid] >= _CREEP_M:
+                ev.setdefault("taxi", sim_time)
+            if _progress[fid] >= hold_m and "hold" not in ev:
+                ev["hold"] = sim_time
+                sim_events.emit("HOLD_SHORT", fid, "departure", sim_time, _roster[fid],
+                                runway=_runway.get(fid))
+
             # Free the runway lock at ROTATION (threshold + _LIFTOFF_ROLL_M), one
             # time, so the next queued departure can start its roll while this one
             # climbs out — the actual throughput fix. The plane stays ACTIVE and
@@ -632,14 +735,128 @@ def advance(sim_time: datetime, tick_sec: float, speed: int) -> None:
                     and _progress[fid] >= _taxi_end_dist.get(fid, 0.0) + _LIFTOFF_ROLL_M):
                 _rwy_release(fid)
                 _runway_released[fid] = True
+                ev_air = _events.setdefault(fid, {})
+                ev_air.setdefault("airborne", sim_time)
+                push_at = ev_air.get("pushback")
+                print(f"[departures] {fid} AIRBORNE from {_runway.get(fid)}"
+                      + (f" ({(sim_time - push_at).total_seconds() / 60:.1f} min after pushback)" if push_at else ""))
+                sim_events.emit("TAKEOFF", fid, "departure", sim_time, _roster[fid],
+                                runway=_runway.get(fid),
+                                since_pushback_s=round((sim_time - push_at).total_seconds()) if push_at else None)
 
             if _progress[fid] >= total:
                 _rwy_release(fid)   # defensive no-op if already released at rotation
                 traffic.clear(fid)  # off the ground / done taxiing
+                route_reservations.release(fid)  # defensive — freed at runway entry
                 _state[fid] = "DONE"
 
 
-async def _tick_one(fid: str) -> dict:
+def _ramp_sec(a: float, b: float, va: float, vb: float, x0: float, x1: float) -> float:
+    """Seconds to travel x0→x1 (metres) inside [a, b], where speed (m/s) rises
+    linearly WITH DISTANCE from va at a to vb at b — the shape of every leg of
+    the departure speed profile. ∫dx / (va + k(x-a)) = ln(v1/v0) / k."""
+    x0, x1 = max(x0, a), min(x1, b)
+    if x1 <= x0:
+        return 0.0
+    if abs(vb - va) < 1e-9:
+        return (x1 - x0) / va
+    k = (vb - va) / (b - a)
+    return math.log((va + k * (x1 - a)) / (va + k * (x0 - a))) / k
+
+
+def _travel_sec(fid: str, p0: float, p1: float) -> float:
+    """Unobstructed travel time (s) from progress p0 to p1 along fid's path, using
+    exactly _target_speed_kt's profile: creep ramp to _CREEP_M, steady taxi to the
+    threshold, then the takeoff-roll ramp. Ignores traffic yields, so it's the
+    optimistic bound the queue chaining in timelines() then pushes back."""
+    taxi_end = _taxi_end_dist.get(fid, 0.0)
+    rwy_end = taxi_end + max(_total_dist.get(fid, taxi_end) - taxi_end, 1.0)
+    creep_end = min(_CREEP_M, taxi_end)
+    taxi, creep, takeoff = (_TAXI_KT * KT_TO_MPS, _GATE_CREEP_KT * KT_TO_MPS,
+                            _TAKEOFF_KT * KT_TO_MPS)
+    return (_ramp_sec(0.0, creep_end, creep, taxi, p0, p1)
+            + _ramp_sec(creep_end, taxi_end, taxi, taxi, p0, p1)
+            + _ramp_sec(taxi_end, rwy_end, taxi, takeoff, p0, p1))
+
+
+_STAGES = ("gate", "pushback", "taxi", "queue", "hold", "runway", "airborne")
+
+
+def timelines(now: datetime) -> dict[str, dict]:
+    """Per-departure stage timeline for the Dashboard's departure-queue waterfall,
+    published with each position row (sim_positions.timeline).
+
+    Stage boundaries: gate (appeared parked at its stand) → pushback (leave stand) → taxi (past the _CREEP_M pushback
+    creep) → queue (first stopped at its slot behind the hold-short line) → hold
+    (reached the hold-short line itself) → runway (granted the runway lock) →
+    airborne (rotation, lock released).
+
+    Boundaries already passed are the ACTUAL times recorded in advance() (listed
+    in `actual`). The rest are PROJECTED: unobstructed travel time over the real
+    route (_travel_sec), then chained per runway lock in queue order — a flight
+    can't reach the hold line before the one ahead has taken the runway, nor
+    take the runway before the one ahead is airborne. Arrivals don't touch the
+    34R lock, so they're not in the chain.
+
+    { "t": {stage: ISO}, "actual": [stage, ...], "runway": "34R" }"""
+    rows: dict[str, dict] = {}
+    waiting: dict[str, list] = {}       # lock -> [(hold_free, fid)]
+    lock_free: dict[str, datetime] = {}  # lock -> projected time it frees up
+    last_rwy: dict[str, datetime] = {}   # lock -> latest runway-entry time so far
+    for fid, st in _state.items():
+        if st not in ("GATE_PARKED", "ACTIVE") or fid not in _total_dist:
+            continue
+        ev = _events.get(fid, {}) if st == "ACTIVE" else {}
+        p = _progress.get(fid, 0.0) if st == "ACTIVE" else 0.0
+        hold_m = _hold_dist.get(fid, 0.0)
+        air_m = min(_taxi_end_dist.get(fid, 0.0) + _LIFTOFF_ROLL_M, _total_dist[fid])
+        push = ev.get("pushback") or _scheduled_dep[fid]
+        t0 = now if st == "ACTIVE" else max(now, push)
+        at = lambda m: t0 + timedelta(seconds=_travel_sec(fid, p, m))  # noqa: E731
+        # A gate time after pushback means it was re-parked by a restart mid-taxi —
+        # its real stand time is unknown, so report it as such (not `actual`).
+        gate_at = _gate_at.get(fid)
+        gate_known = gate_at is not None and gate_at <= push
+        t = {"gate": gate_at if gate_known else push, "pushback": push,
+             "taxi": ev.get("taxi") or at(_CREEP_M)}
+        lock = "W" if _runway.get(fid) == taxiway_graph.RUNWAY_34L else "E"
+        if _runway_entered.get(fid, False):
+            t["runway"] = ev.get("runway") or now
+            t["hold"] = ev.get("hold") or t["runway"]
+            t["queue"] = ev.get("queue") or t["hold"]
+            t["airborne"] = ev.get("airborne") or at(air_m)
+            if "airborne" not in ev:
+                lock_free[lock] = max(lock_free.get(lock, now), t["airborne"])
+            last_rwy[lock] = max(last_rwy.get(lock, t["runway"]), t["runway"])
+        else:
+            ahead = _departures_ahead_in_hold_queue(fid, hold_m) if st == "ACTIVE" else 0
+            t["queue"] = ev.get("queue") or at(max(p, hold_m - ahead * _HOLD_QUEUE_GAP_M))
+            hold_free = ev.get("hold") or at(hold_m)
+            waiting.setdefault(lock, []).append((hold_free, fid))
+            t["_hold_free"] = hold_free
+        rows[fid] = {"t": t, "actual": [k for k in _STAGES if k in ev or (k == "gate" and gate_known)],
+                     "runway": _runway.get(fid)}
+
+    for lock, queue in waiting.items():
+        free, prev = lock_free.get(lock), last_rwy.get(lock)
+        for hold_free, fid in sorted(queue):
+            t = rows[fid]["t"]
+            del t["_hold_free"]
+            hold = _events.get(fid, {}).get("hold") or max(hold_free, prev or hold_free)
+            rwy = max(hold, free or hold, now)
+            t["hold"], t["runway"] = hold, rwy
+            t["queue"] = min(t["queue"], hold)
+            t["airborne"] = rwy + timedelta(seconds=_travel_sec(
+                fid, _hold_dist.get(fid, 0.0),
+                min(_taxi_end_dist.get(fid, 0.0) + _LIFTOFF_ROLL_M, _total_dist[fid])))
+            free, prev = t["airborne"], rwy
+
+    for row in rows.values():
+        row["t"] = {k: row["t"][k].replace(microsecond=0).isoformat() for k in _STAGES}
+    return rows
+
+
+async def _tick_one(fid: str, timeline: dict | None = None) -> dict:
     meta = _roster[fid]
     if _state[fid] == "GATE_PARKED":
         # Parked at the gate (progress 0 == the gate itself — route()'s first
@@ -664,127 +881,91 @@ async def _tick_one(fid: str) -> dict:
         # before it's ever moved.
         heading = _last_heading.get(fid, seg_heading)
 
-    await db.execute(
-        """INSERT INTO live_positions
-             (flight_id, callsign, aircraft_type, airline, origin, destination,
-              assigned_gate, lat, lon, heading_deg, phase, speed_kt, updated_at)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, now())
-           ON CONFLICT (flight_id) DO UPDATE SET
-             lat=EXCLUDED.lat, lon=EXCLUDED.lon,
-             heading_deg=EXCLUDED.heading_deg, phase=EXCLUDED.phase,
-             speed_kt=EXCLUDED.speed_kt, updated_at=now()""",
+    # Published to `sim_positions` — the generator → app contract (positions.py).
+    # Descriptive fields (scheduled_dep, runway, api_status) travel WITH the position:
+    # the app holds no simulation state, so it can't ask us for them.
+    return await positions.upsert(
         fid, meta["callsign"], meta["aircraft_type"], meta["airline"],
-        meta["origin"], meta["destination"], meta["assigned_gate"],
-        lat, lon, heading, phase, speed_kt,
+        meta["origin"], meta["destination"], "departure", meta["assigned_gate"],
+        meta.get("aircraft_reg"), lat, lon, heading, phase, speed_kt,
+        _scheduled_dep.get(fid), None, meta.get("runway"),
+        meta.get("api_status"), timeline,
     )
-
-    return {
-        "id": fid, "callsign": meta["callsign"], "aircraft_type": meta["aircraft_type"],
-        "airline": meta["airline"], "origin": meta["origin"], "destination": meta["destination"],
-        "assigned_gate": meta["assigned_gate"], "pax_count": 0, "status": "ACTIVE",
-        "phase": phase, "lat": lat, "lon": lon, "heading": heading,
-        "ground_speed": speed_kt, "source": "lakebase", "started": True,
-        "api_status": meta.get("api_status"), "runway": meta.get("runway"),
-        "scheduled_dep": _scheduled_dep[fid].isoformat() if fid in _scheduled_dep else None,
-    }
 
 
 async def _finish_one(fid: str, now: datetime) -> dict:
     meta = _roster[fid]
     gates.release_gate(meta.get("assigned_gate"), now, fid)
     _rwy_release(fid)  # already released in advance() at finish — defensive no-op otherwise
-    await db.execute("DELETE FROM live_positions WHERE flight_id=$1", fid)
+    await positions.remove(fid)
     return {"id": fid, "callsign": meta["callsign"], "phase": "INACTIVE", "source": "lakebase"}
 
 
-async def tick(now: datetime) -> list:
-    """Return broadcast-ready payloads for departures that are parked at the
-    gate (GATE_PARKED) or active this tick, plus a final one for any that just
-    finished their taxi-out."""
-    payloads = []
+async def tick(now: datetime) -> tuple[list[str], list[dict]]:
+    """Write this tick's departure positions to Lakebase.
+
+    Returns `(written_flight_ids, removal_payloads)` — same contract as
+    seed_runner.tick(). Position payloads are built by the broadcaster from the rows
+    written here (see broadcaster._tick), so the map renders the DATABASE's contents.
+
+    This also removes an old inconsistency: the snapshot path used to build departures
+    from memory while arrivals were read from the DB, so the two halves of one feature
+    had different sources. Both now go through positions.py."""
+    written, removed = [], []
+    tls = timelines(now)
     for fid, st in list(_state.items()):
         if st in ("GATE_PARKED", "ACTIVE"):
-            payloads.append(await _tick_one(fid))
+            written.append(await _tick_one(fid, tls.get(fid)))
         elif st == "DONE":
-            payloads.append(await _finish_one(fid, now))
+            removed.append(await _finish_one(fid, now))
             _state[fid] = "DEPARTED"
             _cleanup_after_finish(fid)
-    return payloads
+    return written, removed
 
 
-async def full_state() -> list:
-    """Gate-parked or active departures, for a freshly-connecting websocket
-    client."""
-    out = []
-    for fid, st in _state.items():
-        if st not in ("GATE_PARKED", "ACTIVE"):
-            continue
-        meta = _roster[fid]
-        parked = st == "GATE_PARKED"
-        if parked:
-            lat, lon = _path[fid][0]
-            heading = gates.gate_heading(meta.get("assigned_gate"))
-            if heading is None:
-                heading = _boarding_heading(fid)
-        else:
-            lat, lon, seg_heading = _position_at(fid, _progress[fid])
-            # Same frozen-heading rule as _tick_one: a stopped/holding plane keeps
-            # its last moving heading, not a jittery stop-point segment bearing.
-            heading = _last_heading.get(fid, seg_heading)
-        out.append({
-            "id": fid, "callsign": meta["callsign"], "aircraft_type": meta["aircraft_type"],
-            "airline": meta["airline"], "origin": meta["origin"], "destination": meta["destination"],
-            "assigned_gate": meta["assigned_gate"], "pax_count": 0, "status": "ACTIVE",
-            "phase": "GATE_PARKED" if parked else _phase_for(fid, _progress[fid]),
-            "lat": lat, "lon": lon, "heading": heading,
-            "ground_speed": 0.0 if parked else round(_target_speed_kt(fid, _progress[fid]), 1),
-            "source": "lakebase", "started": True,
-            "api_status": meta.get("api_status"), "runway": meta.get("runway"),
-            "scheduled_dep": _scheduled_dep[fid].isoformat() if fid in _scheduled_dep else None,
-        })
+def payload_extras(fid: str) -> dict:
+    """Departure fields that aren't position telemetry and so aren't in
+    `live_positions`: the scheduled departure time, the real-world api_status, and the
+    assigned runway. Merged onto the DB-sourced payload by the broadcaster.
+
+    Returns {} for a flight this module doesn't own."""
+    meta = _roster.get(fid)
+    if meta is None:
+        return {}
+    out: dict = {"api_status": meta.get("api_status"), "runway": meta.get("runway")}
+    sched = _scheduled_dep.get(fid)
+    if sched:
+        out["scheduled_dep"] = sched.isoformat()
     return out
 
 
-# How far into the past the schedule keeps showing already-departed flights.
-# The roster is only pruned of DEPARTED flights at the hourly refresh, so a
-# flight that just left could linger up to an hour; this filter guarantees the
-# list deterministically starts ~15 min in the past regardless of refresh timing.
-_SCHEDULE_PAST_WINDOW_SEC = 15 * 60.0
+def sim_overlay() -> dict[str, dict]:
+    """Live SIM state per departure callsign, for the Schedule board to left-join
+    onto its Lakebase query (see app.py's /api/schedule).
 
+    The board's ROW SET now comes from the flight_schedule dataset, not this
+    roster — so this supplies only what the dataset can't know: the simulated
+    phase, the state-machine status, the gate the sim actually placed the aircraft
+    at, and the assigned runway. A flight absent from here simply isn't being
+    simulated (too far out, or already dropped from the roster); the board shows
+    it with no phase.
 
-def schedule_info(now: datetime | None = None) -> list[dict]:
-    """Full outbound roster (SCHEDULED + GATE_PARKED + ACTIVE + DEPARTED) for
-    the Schedule page's GET /api/schedule — sorted by scheduled_dep ascending.
-    `api_status` (the real-world AeroDataBox status) rides along via **meta.
-
-    Flights whose scheduled departure is more than _SCHEDULE_PAST_WINDOW_SEC in
-    the past are hidden — UNLESS they're still live on the map (GATE_PARKED /
-    ACTIVE), which always show. This keeps the list bounded to [now-15min, …]."""
-    out = []
+    Replaces the old schedule_info(), which owned both the row set and the
+    filtering. Its 15-minute past-window filter is gone — flight_store.board_window
+    now applies the single `now - 10 min` rule for both directions."""
+    out: dict[str, dict] = {}
     for fid, meta in _roster.items():
         st = _state.get(fid, "SCHEDULED")
-        if now is not None and st not in ("GATE_PARKED", "ACTIVE"):
-            age = (now - _scheduled_dep[fid]).total_seconds()
-            if age > _SCHEDULE_PAST_WINDOW_SEC:
-                continue  # departed/scheduled too long ago — drop from the list
         if st == "GATE_PARKED":
             phase = "GATE_PARKED"
         elif st == "ACTIVE":
             phase = _phase_for(fid, _progress[fid])
         else:
             phase = None
-        # Gate shown on the board: the sim-assigned gate once activated (real API
-        # gate if modelled+free, else a reserved fallback stand), else the real
-        # API gate the airport reported (blank if none assigned yet). Every
-        # departure now gets a stand at pushback, so all will taxi on the map.
-        api_gate = _api_gate.get(fid)
-        board_gate = meta.get("assigned_gate") or api_gate
-        out.append({
-            **meta,
-            "assigned_gate": board_gate,
-            "scheduled_dep": _scheduled_dep[fid].isoformat(),
+        out[fid] = {
             "status": st,
             "phase": phase,
-            "on_map": True,  # departures always simulate now (fallback gate at pushback)
-        })
-    return sorted(out, key=lambda f: f["scheduled_dep"])
+            "assigned_gate": meta.get("assigned_gate"),
+            "runway": meta.get("runway"),
+        }
+    return out

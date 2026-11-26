@@ -1,17 +1,52 @@
 bundle:
   name: airport-simulator
 
+# Resource definitions live in resources/ — one file per concern:
+#   resources/app.yml            the Databricks App (System B)
+#   resources/ingest.yml         flight ingest for ALL airports: per-airport raw volumes,
+#                                ONE SDP pipeline, ONE job (fetch → transform → sync)
+#   resources/airport_genie.genie_space.yml   the "Ask Genie" space (definition: genie/*.geniespace.json)
+#   resources/README.md          what lives where; the paused fallback generator job
+# Adding an airport = config/airports.json + UC schema + entries in resources/ingest.yml.
+include:
+  - resources/*.yml
+
+# The Genie space definition is read LOCALLY by `bundle deploy` (resources/airport_genie…
+# → genie/*.geniespace.json). Don't upload it to the workspace files: the app snapshots the
+# whole bundle root, and a .geniespace.json workspace object can't be copied into it.
+sync:
+  exclude:
+    - genie/**
+
+variables:
+  catalog:
+    description: UC catalog holding one schema per airport (airport_simulator_<iata>).
+    default: classic_stable_kuldeep
+  lakebase_instance:
+    description: Lakebase instance the app/generator use; synced tables land here too.
+    default: airport-simulator-db
+  lakebase_database:
+    description: Postgres database on that instance. Synced tables land in a Postgres
+      schema named after the airport's UC schema (e.g. airport_simulator_doh.flight_schedule).
+    default: hia_sim
+  warehouse_id:
+    description: SQL warehouse for the Genie space (and the app's CAN_USE grant),
+      resolved by NAME at deploy time so no warehouse id is stored in the repo.
+    lookup:
+      warehouse: SQL-xsmall
+  secret_scope:
+    description: Secret scope holding rapidapi-key (and the Lakebase app credentials).
+    default: airport-sim
+
 targets:
   dev:
-    mode: development
+    # NOTE: deliberately NOT `mode: development`. That mode force-prefixes every resource
+    # with "[dev <your_short_name>] " and REFUSES a prefix without the username in it.
+    # Without the mode, the `name:` fields apply verbatim, giving a plain "[dev] " prefix.
+    #   - auto-paused schedules  -> each job sets `pause_status` explicitly
+    #   - uniqueness via prefix  -> deploy path is per-user (~/.bundle/airport-simulator/dev)
     default: true
     workspace:
-      host: https://adb-0000000000000000.0.azuredatabricks.net
+      # Host comes from the local CLI profile (~/.databrickscfg) — no workspace URL in
+      # the repo, which is public.
       profile: fevm01
-
-resources:
-  apps:
-    airport-simulator:
-      name: airport-simulator
-      description: Hamad International Airport Real-Time Simulator
-      source_code_path: /Workspace/Users/you@example.com/airport-simulator

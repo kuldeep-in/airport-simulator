@@ -2,19 +2,61 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Fonts ("Dashboard Data" pairing — Fira Code for numerics, Fira Sans for labels)
+   are loaded via <link> in index.html, NOT an @import here: an @import after the
+   @tailwind directives above is invalid CSS ordering and Vite silently drops it.
+   Both faces have system fallbacks in --font-sans / --font-mono below, so the app
+   degrades gracefully if Google Fonts is unreachable (e.g. locked-down network). */
+
 :root {
   --bg-base: #0a0e1a;
   --bg-panel: #111827;
   --bg-card: #1c2535;
+  /* Slightly lifted surface for nested/inner panels — gives the dense dashboard a
+     second elevation step without introducing another hard border. */
+  --bg-elevated: #232e40;
   --border: #2d3748;
+  /* Hairline border for interior separators: reads as structure, not as a box. */
+  --border-subtle: rgba(255, 255, 255, 0.06);
   --text-primary: #e2e8f0;
-  --text-muted: #64748b;
+  /* WAS #64748b — only 3.23:1 on --bg-card, which FAILS WCAG AA (4.5:1) for
+     normal-size text, and it was used for every card title and chart axis label
+     at 9-11px. #94a3b8 measures 6.00:1 on card / 6.92:1 on panel while staying
+     visibly secondary. Accessibility is priority 1 in this skill's rule table. */
+  --text-muted: #94a3b8;
+  /* Genuinely de-emphasised text (footnotes, axis ticks): still clears 4.5:1. */
+  --text-dim: #7d8ca3;
   --accent-blue: #38bdf8;
   --accent-amber: #fbbf24;
+  --accent-indigo: #6366f1;
   --status-green: #22c55e;
   --status-yellow: #eab308;
-  --status-red: #ef4444;
+  /* WAS #ef4444 — 4.09:1 on card, just under AA for normal text. #f87171 lifts
+     it to 5.6:1 and still reads unmistakably as an alert colour. */
+  --status-red: #f87171;
   --status-gray: #475569;
+
+  /* Spacing scale — density 9/10 (dense/dashboard) from the generated design
+     system, so an ops operator sees more per screen without it feeling cramped. */
+  --space-xs: 2px;
+  --space-sm: 4px;
+  --space-md: 8px;
+  --space-lg: 12px;
+  --space-xl: 16px;
+  --space-2xl: 24px;
+
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+
+  /* Motion 3/10 (subtle): 150-300ms is the skill's guidance — fast enough to feel
+     instant, slow enough to read as a transition rather than a jump. */
+  --dur-fast: 150ms;
+  --dur-base: 220ms;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+
+  --font-sans: 'Fira Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'Fira Code', ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 * {
@@ -31,9 +73,12 @@ body,
   overflow: hidden;
   background: var(--bg-base);
   color: var(--text-primary);
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica,
-    Arial, sans-serif;
+  font-family: var(--font-sans);
   font-size: 13px;
+  /* Tabular figures so live-updating numbers don't shift width digit-to-digit —
+     a per-second ticking KPI otherwise visibly jitters. */
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
 }
 
 .panel {
@@ -44,7 +89,7 @@ body,
 .card {
   background: var(--bg-card);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
 }
 
 .muted {
@@ -58,6 +103,9 @@ body,
 /* toggle switch */
 .switch {
   position: relative;
+  /* display:block so the track keeps its box when rendered as a <span> (the radar
+     layer toggles use spans now that the whole row is the <button>). */
+  display: block;
   width: 36px;
   height: 20px;
   border-radius: 10px;
@@ -119,4 +167,271 @@ button {
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.3; }
+}
+
+/* ── Operations Dashboard chart grid ─────────────────────────────────────────
+   A FIXED 6-track grid (not auto-fit): cards declare explicit spans so each
+   authored row sums to exactly 6 and full-width cards can't strand empty
+   tracks. 6 divides by 2 and 3, so thirds (span 2) and halves (span 3) both
+   tile without remainder. `grid-auto-flow: dense` backfills any hole left when
+   a span wraps at a smaller breakpoint.
+   Breakpoints collapse the track count while keeping the same spans valid:
+     >=1500px  6 tracks -> thirds and halves as authored
+     >=1040px  6 tracks (cards get narrower; still exact)
+     >=760px   2 tracks -> every span 2/3 becomes a full row
+     <760px    1 track  -> single column
+   Spans are clamped in each breakpoint so a `span 3` can never exceed the
+   available tracks (which would otherwise overflow the container). */
+.dash-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-auto-flow: dense;
+  gap: var(--space-lg);
+  align-items: stretch;
+}
+
+/* ── Card polish ────────────────────────────────────────────────────────────
+   The dashboard is a wall of same-coloured rectangles; a subtle top highlight +
+   real shadow gives each card an edge so the eye can separate them without
+   adding heavier borders (which would add visual noise at this density). */
+.dash-cell {
+  position: relative;
+  border-radius: var(--radius-lg);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 4px 12px rgba(0, 0, 0, 0.15);
+  transition: border-color var(--dur-base) var(--ease-out),
+              box-shadow var(--dur-base) var(--ease-out);
+}
+
+/* 1px inner highlight along the top edge — simulates light from above, the
+   cheapest way to make a flat dark card read as a physical surface. */
+.dash-cell::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 1px;
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.09) 22%,
+              rgba(255, 255, 255, 0.09) 78%, transparent);
+  pointer-events: none;
+}
+
+.dash-cell:hover {
+  border-color: #3a4658;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 22px rgba(0, 0, 0, 0.28);
+}
+
+/* Card title: uppercase micro-label. letter-spacing compensates for the size. */
+.dash-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+/* ── Live KPI tiles ─────────────────────────────────────────────────────────
+   A left accent rail keyed to each metric's colour: the row of tiles becomes
+   scannable by hue while the value itself stays high-contrast white. */
+.kpi-tile {
+  position: relative;
+  overflow: hidden;
+  border-radius: var(--radius-md);
+  transition: transform var(--dur-fast) var(--ease-out),
+              box-shadow var(--dur-base) var(--ease-out);
+}
+
+.kpi-tile::after {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: var(--kpi-accent, var(--accent-blue));
+  opacity: 0.85;
+}
+
+.kpi-tile:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.3);
+}
+
+/* Numeric readouts use the mono face + tabular figures so columns of digits line
+   up and a changing value never reflows its neighbours. */
+.kpi-value,
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'zero' 1; /* slashed zero: 0 vs O at a glance */
+}
+
+/* ── Live status dot ────────────────────────────────────────────────────────
+   Pulses only while genuinely live. Motion conveys state (skill rule 7:
+   "motion conveys meaning"), it isn't decoration. */
+.live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--status-green);
+  box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.16);
+  animation: pulse 2s ease-in-out infinite;
+}
+
+/* ── Accessibility: visible keyboard focus ──────────────────────────────────
+   The skill flags "removing focus rings" as a critical anti-pattern. Nothing
+   here defined a focus style, so keyboard users had no position indicator. */
+.dash-cell:focus-visible,
+.kpi-tile:focus-visible,
+button:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 2px;
+}
+
+/* ── Nav tabs ───────────────────────────────────────────────────────────────
+   Inactive tabs had NO hover feedback: the only way to know a tab was clickable
+   was to click it ("no hover feedback on clickable elements" is an explicit
+   anti-pattern in the skill's UX rules). */
+.tab-link {
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out),
+              color var(--dur-fast) var(--ease-out);
+}
+
+.tab-link:not([data-active]):hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-primary);
+}
+
+/* ── Interactive list rows (Schedule / Gates) ───────────────────────────────
+   Rows are clickable but were styled as static cards. This gives them the same
+   affordance vocabulary as the rest of the app: pointer cursor, hover lift, and
+   a keyboard focus ring. Applied via class so every page shares one definition. */
+.row-interactive {
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out),
+              border-color var(--dur-fast) var(--ease-out);
+}
+
+.row-interactive:hover {
+  background: var(--bg-elevated);
+  border-color: #3a4658;
+}
+
+.row-interactive:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 2px;
+}
+
+/* Clickable rows on the blue FIDS-style boards (Schedule page): a light hover
+   tint instead of the dark-theme --bg-elevated. !important beats the row's inline
+   (selected/unselected) background. */
+.fids-row:hover {
+  background: rgba(255, 255, 255, 0.08) !important;
+}
+
+/* Radar HUD flight-board row: hover + focus affordance on a selectable row. */
+.board-row {
+  transition: background var(--dur-fast) var(--ease-out);
+}
+
+.board-row:hover {
+  background: rgba(255, 255, 255, 0.10) !important;
+}
+
+.board-row:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: -1px;
+}
+
+/* ── Icon buttons ───────────────────────────────────────────────────────────
+   Keeps the small visual box (32px reads correctly against a dense map) while
+   guaranteeing the 44x44 minimum TAP area the skill's touch rules require, via a
+   transparent ::after overlay rather than by inflating the visible control. */
+.icon-btn {
+  position: relative;
+  transition: background var(--dur-fast) var(--ease-out),
+              border-color var(--dur-fast) var(--ease-out);
+}
+
+.icon-btn::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 44px;
+  height: 44px;
+  transform: translate(-50%, -50%);
+}
+
+.icon-btn:hover {
+  background: rgba(56, 189, 248, 0.24) !important;
+  border-color: rgba(56, 189, 248, 0.75) !important;
+}
+
+/* Radar layer-toggle row: the whole row is the control, so it needs its own
+   hover affordance (it's a <button> with a transparent background). */
+.radar-toggle-row:hover {
+  background: rgba(255, 255, 255, 0.06) !important;
+}
+
+.radar-toggle-row:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 1px;
+}
+
+/* ── Skip link ──────────────────────────────────────────────────────────────
+   "Provide skip to main content link" — offscreen until focused, so keyboard
+   users can bypass the nav instead of tabbing it on every page. */
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  z-index: 100;
+  padding: var(--space-md) var(--space-lg);
+  background: var(--accent-blue);
+  color: #0a0e1a;
+  font-weight: 600;
+  border-radius: 0 0 var(--radius-md) 0;
+}
+
+.skip-link:focus {
+  left: 0;
+}
+
+/* ── prefers-reduced-motion ─────────────────────────────────────────────────
+   Required by the pre-delivery checklist. A control-room screen that pulses and
+   slides can be actively hostile to motion-sensitive operators, so honour the
+   OS setting and drop to static styling. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+  .kpi-tile:hover { transform: none; }
+}
+
+/* Desktop: spans exactly as authored — 2 = a third, 3 = a half, full = the row. */
+.dash-cell[data-span="2"]    { grid-column: span 2; }
+.dash-cell[data-span="3"]    { grid-column: span 3; }
+.dash-cell[data-span="full"] { grid-column: 1 / -1; }
+
+/* Tablet: 2 tracks. Thirds pair up two-per-row; halves take the whole row so
+   their 12-13 bar series stay legible. A row of three thirds can't tile 2 tracks
+   evenly, so the LAST card of each triad is marked `data-tail` and stretches to
+   the full width — filling what would otherwise be a half-empty row. */
+@media (max-width: 1039px) {
+  .dash-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .dash-cell[data-span="2"]    { grid-column: span 1; }
+  .dash-cell[data-span="3"]    { grid-column: 1 / -1; }
+  .dash-cell[data-span="2"][data-tail="true"] { grid-column: 1 / -1; }
+}
+
+/* Phone: single column, everything full width. */
+@media (max-width: 759px) {
+  .dash-grid { grid-template-columns: minmax(0, 1fr); }
+  .dash-cell[data-span="2"],
+  .dash-cell[data-span="3"],
+  .dash-cell[data-span="full"] { grid-column: 1 / -1; }
 }

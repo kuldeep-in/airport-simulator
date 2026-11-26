@@ -1,0 +1,139 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# FLIGHT INGEST (System C) — ONE job, ONE pipeline, all airports.
+#
+#   Stage 1  fetch         for each enabled airport, in parallel:
+#                          AeroDataBox → /Volumes/<catalog>/<schema>/raw_api/aerodatabox/…json
+#   Stage 2  transform     ONE SDP pipeline: each airport's volume → bronze → silver
+#                          (SCD1 + SCD2), published into that airport's own schema;
+#                          plus raw_telemetry → sensor_readings_<sfx> / sim_events_<sfx>
+#                          (written by the generator, loaded here — no extra compute)
+#   then     sync_lakebase for each enabled airport: silver_flight_schedule_<sfx> →
+#                          UC <schema>.flight_schedule_<sfx> = Lakebase
+#                          <database>.<schema>.flight_schedule_<sfx> (TRIGGERED) — the
+#                          table the generator and app READ (server/airports.FLIGHT_TABLE)
+#   <sfx> = lower-case IATA (doh, lhr) — every pipeline output and synced table carries it.
+#
+# Which airports are FETCHED + SYNCED = job parameter `airports` (DOH + LHR; each fetched
+# airport costs 6 AeroDataBox calls/day). Drop an entry to stop fetching that airport.
+# The pipeline declares every configured airport's tables regardless (an airport with an
+# empty volume just has empty tables).
+#
+# Adding an airport: config/airports.json + a UC schema + a volume block below + an
+# entry in the pipeline's `airports` configuration and (to enable it) the job parameter.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+resources:
+  volumes:
+    raw_api_doh:
+      catalog_name: ${var.catalog}
+      schema_name: airport_simulator_doh
+      name: raw_api
+      volume_type: MANAGED
+      comment: Raw AeroDataBox responses for DOH, one JSON document per 4-hour slot.
+    raw_api_lhr:
+      catalog_name: ${var.catalog}
+      schema_name: airport_simulator_lhr
+      name: raw_api
+      volume_type: MANAGED
+      comment: Raw AeroDataBox responses for LHR, one JSON document per 4-hour slot.
+    raw_telemetry_doh:
+      catalog_name: ${var.catalog}
+      schema_name: airport_simulator_doh
+      name: raw_telemetry
+      volume_type: MANAGED
+      comment: Generator telemetry for DOH — sensors/ (every 5 s reading) and events/ (sim lifecycle), one JSONL file per 15-minute window.
+    raw_telemetry_lhr:
+      catalog_name: ${var.catalog}
+      schema_name: airport_simulator_lhr
+      name: raw_telemetry
+      volume_type: MANAGED
+      comment: Generator telemetry for LHR (empty until LHR is simulated).
+
+  pipelines:
+    flight_schedule:
+      name: "[dev] airport-simulator-flights"
+      catalog: ${var.catalog}
+      # Default schema only; every table is published fully qualified into its
+      # airport's schema (see pipelines/flight_schedule/transformations/flight_schedule.py).
+      schema: airport_simulator_doh
+      serverless: true
+      continuous: false            # triggered by stage 2 of the ingest job
+      channel: CURRENT
+      root_path: ../pipelines/flight_schedule
+      libraries:
+        - glob:
+            include: ../pipelines/flight_schedule/transformations/**
+      configuration:
+        catalog: ${var.catalog}
+        airports: >-
+          [{"iata": "DOH", "schema": "airport_simulator_doh", "hub": "QR", "city": "Doha"},
+           {"iata": "LHR", "schema": "airport_simulator_lhr", "hub": "BA", "city": "London"}]
+        spark.sql.session.timeZone: UTC
+
+  jobs:
+    ingest:
+      name: "[dev] airport-simulator-ingest"
+      description: >-
+        Flight ingest for all airports: AeroDataBox → per-airport UC volume → one SDP
+        pipeline (bronze/silver per airport schema) → Lakebase synced tables, which the
+        generator and app read.
+      schedule:
+        # 00:00, 04:00, … UTC — the 4-hour slot boundaries the fetch keys its file on.
+        quartz_cron_expression: "0 0 0,4,8,12,16,20 * * ?"
+        timezone_id: UTC
+        pause_status: UNPAUSED
+      max_concurrent_runs: 1
+
+      parameters:
+        - name: airports
+          # JSON list of {iata, schema, suffix}; suffix = the _<sfx> on pipeline outputs
+          # and the synced table.
+          default: >-
+            [{"iata":"DOH","schema":"airport_simulator_doh","suffix":"doh"},
+             {"iata":"LHR","schema":"airport_simulator_lhr","suffix":"lhr"}]
+
+      tasks:
+        # ── Stage 1: fetch each enabled airport into its own volume (parallel) ──
+        - task_key: fetch
+          for_each_task:
+            inputs: "{{job.parameters.airports}}"
+            concurrency: 4
+            task:
+              task_key: fetch_airport
+              notebook_task:
+                notebook_path: ../notebooks/fetch_aerodatabox.py
+                base_parameters:
+                  airport: "{{input.iata}}"
+                  catalog: ${var.catalog}
+                  schema: "{{input.schema}}"
+                  volume: raw_api
+                  secret_scope: ${var.secret_scope}
+                  secret_key: rapidapi-key
+                  force: "false"
+
+        # ── Stage 2: one pipeline transforms every airport ──
+        - task_key: transform
+          depends_on:
+            - task_key: fetch
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.flight_schedule.id}
+
+        # ── Sync each enabled airport's current table into Lakebase ──
+        - task_key: sync_lakebase
+          depends_on:
+            - task_key: transform
+          for_each_task:
+            inputs: "{{job.parameters.airports}}"
+            concurrency: 4
+            task:
+              task_key: sync_airport
+              notebook_task:
+                notebook_path: ../notebooks/sync_to_lakebase.py
+                base_parameters:
+                  catalog: ${var.catalog}
+                  schema: "{{input.schema}}"
+                  source_table: "silver_flight_schedule_{{input.suffix}}"
+                  synced_table: "flight_schedule_{{input.suffix}}"
+                  instance: ${var.lakebase_instance}
+                  database: ${var.lakebase_database}
+                  grant_to: airport_app
