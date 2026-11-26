@@ -55,6 +55,16 @@ resources:
             securable_full_name: ${var.catalog}.airport_simulator_doh.sim_events_doh
             securable_type: TABLE
             permission: SELECT
+        - name: tbl-risk-doh
+          uc_securable:
+            securable_full_name: ${var.catalog}.airport_simulator_doh.gold_delay_risk_doh
+            securable_type: TABLE
+            permission: SELECT
+        - name: tbl-risk-outcomes-doh
+          uc_securable:
+            securable_full_name: ${var.catalog}.airport_simulator_doh.v_delay_risk_outcomes_doh
+            securable_type: TABLE
+            permission: SELECT
         - name: tbl-synced-lhr
           uc_securable:
             securable_full_name: ${var.catalog}.airport_simulator_lhr.flight_schedule_lhr

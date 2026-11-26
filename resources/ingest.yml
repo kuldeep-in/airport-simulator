@@ -11,6 +11,7 @@
 #                          UC <schema>.flight_schedule_<sfx> = Lakebase
 #                          <database>.<schema>.flight_schedule_<sfx> (TRIGGERED) — the
 #                          table the generator and app READ (server/airports.FLIGHT_TABLE)
+#   (delay-risk scoring runs hourly in its own job — resources/ml.yml)
 #   <sfx> = lower-case IATA (doh, lhr) — every pipeline output and synced table carries it.
 #
 # Which airports are FETCHED + SYNCED = job parameter `airports` (DOH + LHR; each fetched

@@ -2,6 +2,9 @@
   "data_sources": {
     "tables": [
       {
+        "identifier": "classic_stable_kuldeep.airport_simulator_doh.gold_delay_risk_doh"
+      },
+      {
         "column_configs": [
           {
             "column_name": "aircraft_model",
@@ -104,6 +107,9 @@
           }
         ],
         "identifier": "classic_stable_kuldeep.airport_simulator_doh.silver_flight_schedule_doh"
+      },
+      {
+        "identifier": "classic_stable_kuldeep.airport_simulator_doh.v_delay_risk_outcomes_doh"
       },
       {
         "column_configs": [

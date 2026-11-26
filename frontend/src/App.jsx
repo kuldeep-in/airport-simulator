@@ -1,6 +1,7 @@
 import { Suspense, lazy } from 'react';
 import { useWebSocket } from './hooks/useWebSocket';
 import TopTabs from './components/TopTabs';
+import DelayRiskAlerts from './components/DelayRiskAlerts';
 
 const Scene3D = lazy(() => import('./components/Scene3D'));
 const ConnectionsPage = lazy(() => import('./pages/ConnectionsPage'));
@@ -63,6 +64,7 @@ export default function App() {
           focused (see .skip-link). */}
       <a href="#main-content" className="skip-link">Skip to main content</a>
       <TopTabs active={activeTab} />
+      <DelayRiskAlerts />
       {/* <main> landmark — the app had no main region, so assistive tech had no
           way to identify where page content begins. */}
       <main id="main-content" style={{ flex: 1, minHeight: 0, position: 'relative' }}>

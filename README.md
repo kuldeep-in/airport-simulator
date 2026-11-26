@@ -19,6 +19,10 @@ An **Ask Genie** tab answers natural-language questions over the Delta history.
   catalog of every table and volume in the flow.
 - **3D `/3d`** — three.js scene (rotate, tilt, 3D/top toggle).
 
+- **Delay-risk ML** — a model trained on the governed silver tables predicts each
+  departure's chance of leaving 15+ min late (2 h ahead); scores appear on the Dashboard,
+  as a RISK column on the Schedule board and as in-app alerts, and are queryable in Genie.
+
 ## Architecture
 
 ```

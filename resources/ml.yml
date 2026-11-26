@@ -1,0 +1,94 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# DELAY-RISK ML (the "intelligent" step between governed silver and the app)
+#
+#   train   weekly: silver + archive → gold_departure_features_doh → MLflow →
+#           UC model <catalog>.airport_simulator_doh.delay_risk_model (@champion if it
+#           beats the airline-history baseline on the last 14 days)
+#   score   HOURLY at :15 (own job; the 4-hourly ingest at :00 takes ~5 min, so every
+#           scoring run sees the latest silver data). Each departure is first scored
+#           ≥ 2 h ahead and refreshed every hour until it leaves:
+#           @champion → gold_delay_risk_doh (current) + gold_delay_risk_log_doh (all
+#           predictions) + v_delay_risk_outcomes_doh → synced to Lakebase delay_risk_doh
+#           → app (dashboard panel, schedule board column, in-app alerts) + Genie
+# ─────────────────────────────────────────────────────────────────────────────
+resources:
+  experiments:
+    delay_risk:
+      name: /Workspace/Users/${workspace.current_user.userName}/airport-simulator-delay-risk
+
+  jobs:
+    train_delay_risk:
+      name: "[dev] airport-simulator-train-delay-risk"
+      description: >-
+        Weekly retrain of the departure delay-risk model (P of leaving 15+ min late, 2 h
+        ahead) on the governed silver flight tables; registers in Unity Catalog and moves
+        @champion only when it beats the baseline.
+      schedule:
+        quartz_cron_expression: "0 0 2 ? * SUN"   # Sundays 02:00 UTC
+        timezone_id: UTC
+        pause_status: UNPAUSED
+      max_concurrent_runs: 1
+      tasks:
+        - task_key: train
+          notebook_task:
+            notebook_path: ../ml/train_delay_risk.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: airport_simulator_doh
+              suffix: doh
+              experiment: ${resources.experiments.delay_risk.name}
+              test_days: "14"
+
+    score_delay_risk:
+      name: "[dev] airport-simulator-score-delay-risk"
+      description: >-
+        Hourly: score the next 6 h of DOH departures with the @champion delay-risk model →
+        gold_delay_risk_doh → Lakebase delay_risk_doh (app panel, board column, alerts).
+      schedule:
+        quartz_cron_expression: "0 15 * * * ?"   # every hour at :15 UTC
+        timezone_id: UTC
+        pause_status: UNPAUSED
+      max_concurrent_runs: 1
+      tasks:
+        - task_key: score_delay_risk
+          notebook_task:
+            notebook_path: ../ml/score_delay_risk.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: airport_simulator_doh
+              suffix: doh
+              horizon_hours: "6"
+
+        - task_key: sync_delay_risk
+          depends_on:
+            - task_key: score_delay_risk
+          notebook_task:
+            notebook_path: ../notebooks/sync_to_lakebase.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: airport_simulator_doh
+              source_table: gold_delay_risk_doh
+              synced_table: delay_risk_doh
+              instance: ${var.lakebase_instance}
+              database: ${var.lakebase_database}
+              grant_to: airport_app
+
+    # Manual (no schedule): score "as of N hours ago" and compare with what actually
+    # happened — a quick honesty check after retraining or feature changes. Writes nothing.
+    backtest_delay_risk:
+      name: "[dev] airport-simulator-backtest-delay-risk"
+      description: Backtest the champion delay-risk model as of N hours ago vs actual delays (read-only).
+      max_concurrent_runs: 1
+      parameters:
+        - name: backtest_hours_ago
+          default: "8"
+      tasks:
+        - task_key: backtest
+          notebook_task:
+            notebook_path: ../ml/score_delay_risk.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: airport_simulator_doh
+              suffix: doh
+              horizon_hours: "6"
+              backtest_hours_ago: "{{job.parameters.backtest_hours_ago}}"

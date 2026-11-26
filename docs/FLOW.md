@@ -172,3 +172,18 @@ sequenceDiagram
     A-->>U: status · text · SQL · rows · suggested questions
   end
 ```
+
+## 9. Delay-risk ML
+
+```mermaid
+flowchart LR
+  S[(silver_flight_schedule_doh\n+ 122-day archive)] --> FE[ml/features.py\npoint-in-time features]
+  FE --> T[train weekly\nMLflow]
+  T --> M[(UC model delay_risk_model\n@champion if > baseline)]
+  M --> SC[score hourly\nnext 6 h of departures]
+  FE --> SC
+  SC --> G[(gold_delay_risk_doh\n+ log + outcomes view)]
+  G -->|TRIGGERED sync| L[(Lakebase delay_risk_doh)]
+  L --> A[App: risk panel · RISK column · alert banner]
+  G --> GE[Genie]
+```

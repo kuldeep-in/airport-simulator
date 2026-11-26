@@ -7,6 +7,8 @@
 | `airport_genie.genie_space.yml` | Genie space "Airport Flight Schedule Overview for DOH and LHR" (id in the bound deployment state, not in the repo); definition in `../genie/airport_genie.geniespace.json`. Bound to the existing space, so the ID never changes | DAB |
 | — | `[dev] HIA airport-simulator-generator` — fallback only, **PAUSED** | Manual UI job |
 
+| `ml.yml` | Delay-risk ML: MLflow experiment, weekly training job `[dev] airport-simulator-train-delay-risk`, manual backtest job `[dev] airport-simulator-backtest-delay-risk` , hourly scoring job `[dev] airport-simulator-score-delay-risk` (:15 UTC) | DAB |
+
 ## Ingest job shape
 
 ```

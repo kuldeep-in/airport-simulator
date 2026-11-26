@@ -33,7 +33,7 @@ const STATUS = {
 const KIND = {
   EXTERNAL: '#94a3b8', NOTEBOOK: '#f59e0b', 'UC VOLUME': '#a78bfa', DELTA: '#38bdf8', SDP: '#38bdf8',
   TABLES: '#34d399', TASK: '#fb7185', PROCESS: '#fb7185', WEB: '#fb7185', IDENTITY: '#fda4af',
-  USER: '#e2e8f0', 'AI/BI': '#facc15', JOB: '#f59e0b',
+  USER: '#e2e8f0', 'AI/BI': '#facc15', JOB: '#f59e0b', 'ML MODEL': '#c084fc',
 };
 const ZONE = { app: '#fb7185', lakebase: '#34d399', lakehouse: '#818cf8' };
 
@@ -103,7 +103,7 @@ export default function AboutPage() {
     // outside
     { id: 'user', x: 10, y: 455, w: 95, h: 90, kind: 'USER', s: uiS, title: 'User', lines: ['browser', 'desktop / tablet'] },
     { id: 'adb', x: 1060, y: 52, w: 90, h: 88, kind: 'EXTERNAL', s: ingestS === 'ok' ? 'ok' : 'unknown', title: 'AeroData-', lines: ['Box API', 'HTTPS', '1 call / 4 h'] },
-    { id: 'genie', x: 500, y: 470, w: 230, h: 104, kind: 'AI/BI', s: genieS, title: 'Genie space',
+    { id: 'genie', x: 480, y: 470, w: 220, h: 104, kind: 'AI/BI', s: genieS, title: 'Genie space',
       lines: [space?.title ? trunc(space.title, 34) : 'natural-language SQL', `warehouse ${WAREHOUSE}`, 'runs only when asked'] },
     // APP
     { id: 'sup', x: 130, y: 76, w: 142, h: 76, kind: 'PROCESS', s: supS, title: 'Supervisor',
@@ -117,15 +117,15 @@ export default function AboutPage() {
     { id: 'api', x: 285, y: 270, w: 160, h: 100, kind: 'WEB', s: appS, title: 'API server',
       lines: ['FastAPI · reader loop 1 s', 'WebSocket · REST', '/api/genie · /api/sensors'] },
     { id: 'ui', x: 130, y: 420, w: 315, h: 160, kind: 'WEB', s: uiS, title: 'App UI (React)',
-      lines: ['Home map · Dashboard · Schedule · Gates', 'Ask Genie · About',
+      lines: ['Home map · Dashboard · Schedule · Gates', 'Ask Genie · About · delay-risk alerts',
         wsConnected ? `live via WebSocket · ${m.flights} flights on map` : 'WebSocket closed'] },
     // LAKEBASE
     { id: 'lbs', x: 492, y: 52, w: 176, h: 78, kind: 'TABLES', s: sensorS, title: 'Sensor tables',
       lines: ['sensor_current', 'sensor_readings (24 h)'], mono: [0, 1] },
     { id: 'lbl', x: 492, y: 146, w: 176, h: 104, kind: 'TABLES', s: lbS === 'ok' ? genS : lbS, title: 'Live sim tables',
       lines: ['sim_positions', 'gate_occupancy', 'sim_heartbeat', 'sim_gate_assignment'], mono: [0, 1, 2, 3] },
-    { id: 'lbf', x: 492, y: 282, w: 176, h: 88, kind: 'TABLES', s: lbS === 'ok' ? ingestS : lbS, title: 'Synced flight tables',
-      lines: AIRPORTS.map((a) => `flight_schedule_${a.sfx}`).concat(['TRIGGERED · read-only']), mono: [0, 1] },
+    { id: 'lbf', x: 492, y: 282, w: 176, h: 88, kind: 'TABLES', s: lbS === 'ok' ? ingestS : lbS, title: 'Synced tables',
+      lines: ['flight_schedule_doh | _lhr', `delay_risk_${ACTIVE.sfx} (ML scores)`, 'TRIGGERED · read-only'], mono: [0, 1] },
     // LAKEHOUSE
     { id: 'vol', x: 712, y: 52, w: 150, h: 88, kind: 'UC VOLUME', s: 'batch', title: 'Volumes',
       lines: ['raw_api/', 'raw_telemetry/', 'JSON · JSONL files'], mono: [0, 1] },
@@ -135,7 +135,10 @@ export default function AboutPage() {
       lines: ['airport-simulator-', 'flights · serverless', 'Auto Loader + AUTO CDC'], mono: [0, 1] },
     { id: 'dlt', x: 885, y: 168, w: 150, h: 202, kind: 'DELTA', s: 'batch', title: 'Delta tables',
       lines: ['bronze_aerodatabox_raw_*', 'silver_…_observation_*', 'silver_flight_schedule_*', 'silver_…_history_*',
-        'sensor_readings_*', 'sim_events_*', '* = doh | lhr'], mono: [0, 1, 2, 3, 4, 5], small: true },
+        'sensor_readings_*', 'sim_events_*', 'gold_delay_risk_doh (ML)'], mono: [0, 1, 2, 3, 4, 5, 6], small: true },
+    // INTELLIGENCE — the delay-risk model (trained weekly, scored hourly in its own job)
+    { id: 'ml', x: 885, y: 420, w: 150, h: 150, kind: 'ML MODEL', s: 'batch', title: 'Delay-risk model',
+      lines: ['UC model @champion', 'P(dep. 15+ min late)', 'scored hourly, 2 h+ ahead', 'retrained weekly', 'MLflow · AUC 0.76'], mono: [0] },
     { id: 'syn', x: 712, y: 282, w: 150, h: 88, kind: 'NOTEBOOK', s: 'batch', title: 'Lakebase sync',
       lines: ['sync_to_lakebase.py', 'synced tables', '+ re-grant SELECT'], mono: [0] },
   ];
@@ -160,8 +163,11 @@ export default function AboutPage() {
     { id: 'e-ws', d: 'M365,370 L365,418', label: 'WebSocket · REST', lx: 372, ly: 398, anchor: 'start', dur: 1.2, on: on(appS, uiS) },
     { id: 'e-usr', d: 'M105,500 L128,500', dur: 2, on: uiS === 'ok' },
     // Genie (outside the app) — asked by the UI via /api/genie, queries Delta
-    { id: 'e-ask', d: 'M445,522 L498,522', label: 'ask', lx: 471, ly: 514, dur: 2, on: on(appS, genieS) },
-    { id: 'e-sql', d: 'M730,522 L960,522 L960,372', label: 'SQL on Delta (warehouse)', lx: 845, ly: 514, batch: true },
+    { id: 'e-ask', d: 'M445,522 L478,522', label: 'ask', lx: 461, ly: 514, dur: 2, on: on(appS, genieS) },
+    { id: 'e-sql', d: 'M700,486 L873,486 L873,392 L910,392 L910,372', label: 'SQL on Delta', lx: 786, ly: 478, batch: true },
+    // ML: governed silver → features → model; scores → gold Delta (then the existing sync → Lakebase)
+    { id: 'e-mlin', d: 'M960,372 L960,418', label: 'features', lx: 955, ly: 402, anchor: 'end', batch: true, small: true },
+    { id: 'e-mlout', d: 'M995,420 L995,374', label: 'scores', lx: 1001, ly: 402, anchor: 'start', batch: true, small: true },
   ];
 
   const components = [
@@ -171,8 +177,12 @@ export default function AboutPage() {
       io: 'AeroDataBox → raw_api volume' },
     { s: 'batch', what: 'Transform', type: 'SDP pipeline · serverless · triggered', name: PIPELINE, freq: 'each job run · or on demand',
       io: 'raw_api → bronze → silver (SCD1 + SCD2); raw_telemetry → sensor_readings_* + sim_events_*' },
-    { s: 'batch', what: 'Sync', type: 'Notebook task + synced tables', name: 'notebooks/sync_to_lakebase.py', freq: 'each job run (after transform)',
-      io: 'silver_flight_schedule_* → Lakebase flight_schedule_* · re-grants SELECT to airport_app' },
+    { s: 'batch', what: 'Delay-risk scoring', type: 'Job [dev] airport-simulator-score-delay-risk', name: 'ml/score_delay_risk.py → sync_to_lakebase.py', freq: 'hourly at :15 UTC',
+      io: 'UC model @champion → gold_delay_risk_doh (current) + gold_delay_risk_log_doh + v_delay_risk_outcomes_doh' },
+    { s: 'batch', what: 'Delay-risk training', type: 'Lakeflow Job (DAB) · MLflow · UC registry', name: '[dev] airport-simulator-train-delay-risk', freq: 'weekly · Sun 02:00 UTC',
+      io: 'silver + archive → gold_departure_features_doh → delay_risk_model (@champion only if it beats the baseline)' },
+    { s: 'batch', what: 'Sync', type: 'Notebook task + synced tables', name: 'notebooks/sync_to_lakebase.py', freq: 'each job run (after transform / scoring)',
+      io: 'silver_flight_schedule_* → flight_schedule_*; gold_delay_risk_doh → delay_risk_doh · re-grants SELECT to airport_app' },
     { s: genS, what: 'Generator', type: 'App child process · supervised · auto-restart', name: 'generator.py', freq: `flights 1 s (roster 60 s) · sensors ${SENSOR_INTERVAL_S} s`,
       io: 'flight_schedule_* → live + sensor tables; telemetry files → raw_telemetry' },
     { s: appS, what: 'API server + UI', type: 'Databricks App · MEDIUM · only always-on compute', name: APP_NAME, freq: 'positions 1 s · sensors 2 s · REST 5–15 s',
@@ -233,7 +243,7 @@ export default function AboutPage() {
             <Boundary x={115} y={20} w={340} h={580} color={ZONE.app} title="APP" sub={`${APP_NAME} · Databricks App · MEDIUM`} />
             <Boundary x={285} y={52} w={162} h={196} color={ZONE.app} title="GENERATOR" sub="child process" inner />
             <Boundary x={480} y={20} w={200} h={380} color={ZONE.lakebase} title="LAKEBASE" sub={LAKEBASE.database} />
-            <Boundary x={705} y={20} w={340} h={380} color={ZONE.lakehouse} title="LAKEHOUSE" sub={`Unity Catalog · ${UC_CATALOG}`} />
+            <Boundary x={705} y={20} w={340} h={562} color={ZONE.lakehouse} title="LAKEHOUSE" sub={`Unity Catalog · ${UC_CATALOG}`} />
             {edges.map((e) => <Edge key={e.id} e={e} />)}
             {tiles.map((t) => <Tile key={t.id} {...t} />)}
           </svg>
@@ -355,6 +365,22 @@ const CATALOG = [
         key: 'airport, flight_id, event, ts', retention: 'all', readers: 'Genie / AI-BI (taxi, dwell, runway queue, turnaround)',
         names: UC('sim_events_<iata>'),
         cols: ['airport', 'ts', 'event (TOUCHDOWN · GATE_IN · GATE_OUT · TURNAROUND_HANDOVER · AT_GATE · PUSHBACK · HOLD_SHORT · RUNWAY_ENTER · TAKEOFF)', 'flight_id', 'direction', 'callsign', 'airline', 'aircraft_type', 'aircraft_reg', 'origin', 'destination', 'gate', 'runway', 'detail VARIANT (late_s, dwell_s, queue_wait_s, taxi_m, …)'] },
+      { name: 'gold_departure_features_doh', type: 'Delta · ML features', writer: 'ml/train_delay_risk.py (weekly)', cadence: 'rebuilt each training run',
+        key: 'airport, flight_date, flight_number', retention: 'latest training set', readers: 'model training',
+        names: [`${UC_CATALOG}.airport_simulator_doh.gold_departure_features_doh`],
+        cols: ['features as known 2 h before departure: hour_local, dow, is_wide, is_a380', 'airline / route / hour late rate + volume (28 d)', 'airport_dep_late_rate_prev2h', 'airport_arr_avg_delay_prev2h', 'deps_same_hour', 'has_inbound_link, inbound_delay_min', 'label (left 15+ min late)'] },
+      { name: 'delay_risk_model', type: 'UC registered model (MLflow)', writer: 'ml/train_delay_risk.py', cadence: 'new version weekly',
+        key: 'alias @champion', retention: 'all versions', readers: 'ml/score_delay_risk.py',
+        names: [`${UC_CATALOG}.airport_simulator_doh.delay_risk_model`],
+        cols: ['HistGradientBoosting, P(departure 15+ min late)', 'v2: AUC 0.761 vs baseline 0.556 · 79% precision at ≥ 50% (last 14 days)', 'point-in-time features: an outcome counts only after it happened', 'champion moves only if it beats the baseline'] },
+      { name: 'gold_delay_risk_doh', type: 'Delta · ML scores (MERGE, CDF on)', writer: 'ml/score_delay_risk.py (hourly job)', cadence: 'hourly',
+        key: 'PK airport, flight_date, flight_number, direction', retention: 'upcoming departures (next 6 h)', readers: 'Lakebase delay_risk_doh · Genie',
+        names: [`${UC_CATALOG}.airport_simulator_doh.gold_delay_risk_doh`],
+        cols: ['flight_number', 'airline', 'destination', 'sched_time_utc', 'risk (0–1)', 'risk_band (high ≥ 50% · medium ≥ 25%)', 'reasons (top 3 drivers)', 'model_version', 'scored_at', '+ the input features'] },
+      { name: 'gold_delay_risk_log_doh / v_delay_risk_outcomes_doh', type: 'Delta log + view', writer: 'ml/score_delay_risk.py', cadence: 'hourly (append)',
+        key: 'flight + scored_at', retention: 'all predictions', readers: 'Genie · model monitoring',
+        names: [`${UC_CATALOG}.airport_simulator_doh.gold_delay_risk_log_doh`, `${UC_CATALOG}.airport_simulator_doh.v_delay_risk_outcomes_doh`],
+        cols: ['every prediction ever made', 'view: 2-h-ahead prediction vs actual_delay_minutes / actually_late'] },
       { name: 'flight_schedule_legacy_doh', type: 'Delta · archive', writer: 'one-off (2026-11-26)', cadence: 'static',
         key: '—', retention: '98,302 rows · 2026-07-27 → 2026-11-26', readers: 'Genie / AI-BI (long history)',
         names: [`${UC_CATALOG}.airport_simulator_doh.flight_schedule_legacy_doh`], cols: ['the retired Lakebase flight_schedule, incl. sim_gate'] },
@@ -381,6 +407,9 @@ const CATALOG = [
       { name: 'sensor_current', type: 'Table (app-owned)', writer: 'Generator · sensor task', cadence: `every ${SENSOR_INTERVAL_S} s`,
         key: 'PK airport, sensor_id', retention: 'latest reading per sensor', readers: 'App (2 s) → sensor_update',
         names: ['public.sensor_current'], cols: ['airport', 'sensor_id', 'lon', 'lat', 'temperature', 'pax_density', 'updated_at'] },
+      { name: 'delay_risk_doh', type: 'Synced table (TRIGGERED, read-only)', writer: 'sync_to_lakebase.py (hourly scoring job)', cadence: 'after each scoring run (hourly)',
+        key: 'PK airport, flight_date, flight_number, direction', retention: 'mirrors gold_delay_risk_doh', readers: 'App: schedule RISK column, dashboard panel, alert banner',
+        names: ['airport_simulator_doh.delay_risk_doh'], cols: ['same columns as gold_delay_risk_doh'] },
       { name: 'sensor_readings', type: 'Table (app-owned)', writer: 'Generator · sensor task', cadence: `every ${SENSOR_INTERVAL_S} s × 26 sensors`,
         key: 'PK airport, sensor_id, ts', retention: 'rolling 24 h (pruned every 5 min)', readers: 'App /api/sensors/history (live per-sensor charts)',
         names: ['public.sensor_readings'], cols: ['airport', 'sensor_id', 'ts', 'temperature', 'pax_density', 'indoor'] },

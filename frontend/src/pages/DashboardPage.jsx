@@ -10,6 +10,7 @@ import Donut from '../components/charts/Donut';
 import Histogram from '../components/charts/Histogram';
 import LineTrend from '../components/charts/LineTrend';
 import TimeTrend from '../components/charts/TimeTrend';
+import { fetchDelayRisk, riskColor, riskPct } from '../lib/delayRisk.js';
 import Heatmap from '../components/charts/Heatmap';
 import DemandCurve from '../components/charts/DemandCurve';
 import DepartureWaterfall from '../components/charts/DepartureWaterfall';
@@ -38,7 +39,7 @@ async function fetchJSON(url) {
 // The card is a column flexbox and the body gets flex:1, so cards sitting in the
 // same row stretch their CONTENT to equal height instead of leaving a ragged gap
 // under the shorter one (grid already equalises the boxes; this fills them).
-function Section({ title, children, wide, span, tail, right }) {
+function Section({ title, children, wide, span, tail, right, id }) {
   // The span is published as a data attribute rather than an inline style so the
   // stylesheet owns every breakpoint (inline styles would win over media queries
   // and freeze the desktop layout on small screens). See `.dash-grid` in index.css.
@@ -46,7 +47,7 @@ function Section({ title, children, wide, span, tail, right }) {
   // breakpoint it stretches full width so the triad doesn't leave a half-empty row.
   const size = wide ? 'full' : String(span || 2);
   return (
-    <section className="card dash-cell" data-span={size} data-tail={tail ? 'true' : undefined}
+    <section id={id} className="card dash-cell" data-span={size} data-tail={tail ? 'true' : undefined}
              aria-label={title}
              style={{ padding: 'var(--space-xl)', display: 'flex', flexDirection: 'column' }}>
       <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
@@ -376,11 +377,6 @@ export default function DashboardPage() {
           <LiveTile label="Avg delay now" value={asOfNow.avgDelay} unit="min" color={asOfNow.avgDelay > 15 ? '#ef4444' : '#22c55e'} />
           <LiveTile label="On-time (window)" value={`${asOfNow.onTimePct}%`} color={asOfNow.onTimePct >= 80 ? '#22c55e' : '#fbbf24'} />
           <LiveTile label="Overdue" value={asOfNow.overdue} color={asOfNow.overdue > 0 ? '#ef4444' : 'var(--text)'} />
-          <LiveTile label="Pax density" value={env.pax == null ? '—' : env.pax.toFixed(2)} unit="pax/m²" color="#a78bfa"
-                    sub={env.n ? `${env.n} sensors` : 'awaiting sensors'} spark={trend.points.map((d) => d.pax)} />
-          <LiveTile label="Avg temp" value={env.temp == null ? '—' : env.temp.toFixed(1)} unit="°C" color="#fb7185"
-                    sub={env.tempIn != null ? `in ${env.tempIn.toFixed(1)} · out ${env.tempOut.toFixed(1)}` : undefined}
-                    spark={trend.points.map((d) => d.temp)} />
         </div>
 
         {/* A fixed 6-track grid rather than `auto-fit, minmax(320px, 1fr)`.
@@ -393,16 +389,6 @@ export default function DashboardPage() {
             6 divides by both 2 and 3, so halves and thirds both tile cleanly.
             `dense` packing backfills any hole a wrapped span would leave. */}
         <div className="dash-grid">
-          {/* ── HERO: live demand curve (full width) ── */}
-          <Section title="Live demand — arrivals vs departures (now −1h / +3h)" wide>
-            <DemandCurve data={demand.rows} nowFrac={demand.nowFrac} capacity={demand.capacity} />
-          </Section>
-
-          {/* ── Departure queue waterfall (full width) ── */}
-          <Section title="Departure queue — current & upcoming" wide>
-            <DepartureWaterfall rows={depQueue} now={now} tz={tz} />
-          </Section>
-
           {/* ── Row: live terminal environment (sensor feed), equal halves ── */}
           <Section span={3} title="Pax density — live · last 15 min" right={<LiveBadge n={env.n} />}>
             <EnvPanel color="#a78bfa" unit=" pax/m²" digits={2} trend={trend} metric="pax" tz={tz}
@@ -414,6 +400,22 @@ export default function DashboardPage() {
             <EnvPanel color="#fb7185" unit="°C" digits={1} trend={trend} metric="temp" tz={tz}
               overall={env.temp} inside={env.tempIn} outside={env.tempOut}
               peak={env.hottest && { id: env.hottest.sensor_id, value: env.hottest.temperature, label: 'Hottest' }} />
+          </Section>
+
+          {/* ── ML delay risk: P(departure leaves 15+ min late), scored 2 h ahead ── */}
+          <Section id="delay-risk" title="Departures at delay risk — next 6 h · ML model" wide
+                   right={<DelayRiskMeta />}>
+            <DelayRiskPanel tz={tz} />
+          </Section>
+
+          {/* ── Departure queue waterfall (full width) ── */}
+          <Section title="Departure queue — current & upcoming" wide>
+            <DepartureWaterfall rows={depQueue} now={now} tz={tz} />
+          </Section>
+
+          {/* ── Live demand curve (full width) ── */}
+          <Section title="Live demand — arrivals vs departures (now −1h / +3h)" wide>
+            <DemandCurve data={demand.rows} nowFrac={demand.nowFrac} capacity={demand.capacity} />
           </Section>
 
           {/* ── Row: the three "right now" summaries, equal thirds ── */}
@@ -481,6 +483,86 @@ export default function DashboardPage() {
     </div>
   );
 }
+
+// Shared poll for the delay-risk panel + its header meta (one request a minute).
+let _riskCache = { t: 0, data: null, p: null };
+function useDelayRisk() {
+  const [data, setData] = useState(_riskCache.data);
+  useEffect(() => {
+    let alive = true;
+    const load = () => {
+      if (Date.now() - _riskCache.t < 30000 && _riskCache.data) { setData(_riskCache.data); return; }
+      _riskCache.p = _riskCache.p || fetchDelayRisk(6).then((d) => { _riskCache = { t: Date.now(), data: d, p: null }; return d; })
+        .catch(() => { _riskCache.p = null; return null; });
+      _riskCache.p.then((d) => alive && d && setData(d));
+    };
+    load();
+    const t = setInterval(load, 60000);
+    return () => { alive = false; clearInterval(t); };
+  }, []);
+  return data;
+}
+
+function DelayRiskMeta() {
+  const d = useDelayRisk();
+  if (!d?.model_version) return null;
+  const at = d.scored_at ? new Date(d.scored_at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Qatar' }) : '—';
+  return <span className="muted" style={{ fontSize: 10.5 }}>model v{d.model_version} · scored {at} · refreshes hourly</span>;
+}
+
+function DelayRiskPanel({ tz }) {
+  const d = useDelayRisk();
+  const rows = (d?.departures || []).filter((r) => r.minutes_to_departure >= -15);
+  if (!d) return <Loading />;
+  if (!rows.length) {
+    return <div className="muted" style={{ fontSize: 12, padding: 12 }}>
+      No scored departures yet — the delay-risk model scores the next 6 h every hour.</div>;
+  }
+  const counts = rows.reduce((c, r) => ({ ...c, [r.risk_band]: (c[r.risk_band] || 0) + 1 }), {});
+  const fmt = (iso) => new Date(iso).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: tz });
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 16, fontSize: 11.5, marginBottom: 10, flexWrap: 'wrap' }}>
+        {['high', 'medium', 'low'].map((b) => (
+          <span key={b} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ width: 9, height: 9, borderRadius: 2, background: riskColor(b) }} />
+            <b>{counts[b] || 0}</b><span className="muted">{b} risk</span>
+          </span>
+        ))}
+        <span className="muted" style={{ marginLeft: 'auto' }}>
+          P(leaves 15+ min late) · alert when ≥ {Math.round((d.alert_risk || 0.5) * 100)}% within {d.alert_within_min || 90} min
+        </span>
+      </div>
+      <div style={{ maxHeight: 330, overflow: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+          <thead><tr>{['Flight', 'To', 'STD', 'In', 'Risk', '', 'Why'].map((h, i) => (
+            <th key={i} style={{ textAlign: 'left', padding: '5px 8px', fontSize: 10, color: 'var(--text-muted)', fontWeight: 600,
+                                 letterSpacing: '0.05em', textTransform: 'uppercase', borderBottom: '1px solid var(--border)',
+                                 position: 'sticky', top: 0, background: 'var(--bg-card)' }}>{h}</th>
+          ))}</tr></thead>
+          <tbody>
+            {rows.slice(0, 40).map((r) => (
+              <tr key={r.flight_number} style={{ background: r.alert ? 'rgba(248,113,113,0.08)' : undefined }}>
+                <td style={TDR}><b>{r.flight_number}</b></td>
+                <td style={TDR}>{r.destination}</td>
+                <td style={TDR} className="mono">{fmt(r.sched_time_utc)}</td>
+                <td style={TDR} className="mono">{r.minutes_to_departure < 0 ? 'now' : `${r.minutes_to_departure}m`}</td>
+                <td style={{ ...TDR, width: 150 }}>
+                  <div style={{ height: 7, borderRadius: 4, background: 'rgba(255,255,255,0.08)', overflow: 'hidden' }}>
+                    <div style={{ width: `${Math.min(100, r.risk * 100)}%`, height: '100%', background: riskColor(r.risk_band) }} />
+                  </div>
+                </td>
+                <td style={{ ...TDR, color: riskColor(r.risk_band), fontWeight: 700 }} className="mono">{riskPct(r.risk)}</td>
+                <td style={{ ...TDR, color: 'var(--text-muted)', fontSize: 11 }}>{r.reasons.join(' · ') || '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+const TDR = { padding: '6px 8px', borderBottom: '1px solid var(--border-subtle)', whiteSpace: 'nowrap' };
 
 function LiveBadge({ n }) {
   return (

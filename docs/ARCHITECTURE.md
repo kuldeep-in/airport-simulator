@@ -46,6 +46,11 @@ Single-instance rule: gate and runway state live in the generator's memory, so e
 one generator runs per airport — enforced by a Postgres advisory lock taken at startup
 and held for the process lifetime.
 
+**Delay-risk ML** (Lakehouse): weekly training job (MLflow → UC model `delay_risk_model`,
+`@champion` gated on beating the baseline), hourly scoring job (:15 UTC) →
+`gold_delay_risk_doh` → synced `delay_risk_doh` → app panel, RISK column, alerts; Genie
+reads the scores and the prediction-vs-outcome view. See docs/APPFLOW.md §2.
+
 ## 3. Table catalog
 
 ### Unity Catalog — `classic_stable_kuldeep.airport_simulator_<iata>`
@@ -70,6 +75,11 @@ Event types: TOUCHDOWN, GATE_IN, GATE_OUT, TURNAROUND_HANDOVER (arrivals); AT_GA
 PUSHBACK, HOLD_SHORT, RUNWAY_ENTER, TAKEOFF (departures); `detail` VARIANT carries
 late_s, dwell_s, queue_wait_s, taxi_m, …
 
+**ML objects (DOH):** `gold_departure_features_doh` (training features, point-in-time),
+`delay_risk_model` (UC model, `@champion`), `gold_delay_risk_doh` (current scores, MERGE,
+CDF), `gold_delay_risk_log_doh` (every prediction), `v_delay_risk_outcomes_doh`
+(2-h-ahead prediction vs actual delay).
+
 ### Lakebase — `airport-simulator-db` / `hia_sim`
 
 | Table | Written by | Cadence | Key | Retention | Read by |
@@ -82,6 +92,9 @@ late_s, dwell_s, queue_wait_s, taxi_m, …
 | `sensor_current` | sensor task | 5 s | airport, sensor_id | latest | app (2 s) |
 | `sensor_readings` | sensor task | 5 s × 26 | airport, sensor_id, ts | rolling 24h | `/api/sensors/trend`, `/api/sensors/history` |
 
+Lakebase also holds the synced **`delay_risk_doh`** (ML scores; read by the app's
+`/api/delay-risk`, Schedule RISK column and alert banner).
+
 ## 4. Cost design decisions
 
 | Decision | Why |
@@ -93,6 +106,10 @@ late_s, dwell_s, queue_wait_s, taxi_m, …
 | **15-minute telemetry files** | 96 files / stream / day instead of 1,440 → faster Auto Loader listing, fewer small files; flushed on SIGTERM so redeploys don't drop history. |
 | **One pipeline, per-airport schemas** | One update per run for all airports; adding an airport is config. |
 | **Lakebase for live reads, Delta for analytics** | App queries need ms latency and joins with 1 Hz sim tables; a SQL warehouse polled every 15 s would never auto-stop. Genie uses the warehouse only on demand. |
+
+- **ML without always-on compute:** hourly batch scoring job (no model-serving
+  endpoint), weekly serverless training (~5 min). Flight inputs change every 4 h and the
+  2-h lead only needs hourly refresh, so an endpoint would add 24/7 cost for no gain.
 
 ## 5. Identity and permissions
 

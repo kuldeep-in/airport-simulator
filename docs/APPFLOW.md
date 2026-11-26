@@ -76,7 +76,43 @@ Conversation API as its service principal and the UI polls `/api/genie/message` 
 answer text, generated SQL and result rows. The space queries the Delta silver tables on
 the SQL warehouse — never Lakebase.
 
-## 2. Sensor data
+## 2. Delay-risk prediction (ML)
+
+The "intelligent" step between governed data and the app: **P(departure leaves 15+ min
+late), predicted 2 h ahead**, for every departure in the next 6 h.
+
+1. **Features** (`ml/features.py`, shared by training and scoring) — per departure, as
+   known at its feature time ft = sched − 2 h (capped at "now" when scoring): airline /
+   route / hour-of-day late rate over 28 days, airport departure-late share and average
+   arrival delay over the previous 2 h, departures in the same hour, aircraft class, local
+   hour / weekday, linked-inbound delay (turnaround pairs). **Point-in-time**: a flight's
+   outcome only counts once it actually happened (its revised time < ft) — the same rule in
+   training and scoring, so no leakage and no train/serve skew.
+2. **Training** — weekly job `[dev] airport-simulator-train-delay-risk` (`ml/train_delay_risk.py`):
+   silver + the 122-day archive → `gold_departure_features_doh` → scikit-learn
+   HistGradientBoosting, tracked in MLflow, registered in Unity Catalog as
+   `delay_risk_model`. Time-based split (last 14 days held out). `@champion` moves only if
+   the new version beats the airline-history baseline. v2: AUC 0.761 vs 0.556, 79 %
+   precision at ≥ 50 % risk.
+3. **Scoring** — job `[dev] airport-simulator-score-delay-risk`, hourly at :15 UTC (`ml/score_delay_risk.py`;
+   the 4-hourly ingest at :00 takes ~5 min, so each run sees the latest silver data):
+   `@champion` scores the next 6 h → `gold_delay_risk_doh` (current, MERGE, CDF on) +
+   `gold_delay_risk_log_doh` (every prediction) + view `v_delay_risk_outcomes_doh`
+   (prediction vs actual). Each score carries its band (high ≥ 50 %, medium ≥ 25 %) and the
+   top-3 plain-language reasons. No champion → the task exits cleanly.
+4. **Served** — `sync_delay_risk` → Lakebase `airport_simulator_doh.delay_risk_doh`
+   (TRIGGERED, SELECT re-granted to `airport_app`).
+5. **Delivered** — app `/api/delay-risk`: Dashboard panel "Departures at delay risk", the
+   Schedule board RISK column (reasons on hover), and an **in-app alert banner** on every
+   page for high-risk departures within 90 min.
+6. **Queryable** — `gold_delay_risk_doh` and `v_delay_risk_outcomes_doh` are in the Genie space.
+7. **Checked** — manual job `[dev] airport-simulator-backtest-delay-risk` scores "as of N h
+   ago" and compares with what happened (writes nothing).
+
+Hourly scoring means every departure is first scored 2–3 h ahead and refreshed each hour
+until it leaves (~24 short serverless runs/day).
+
+## 3. Sensor data
 
 1. **Generate** — the generator's sensor task produces one reading for each of 26
    sensors on a fixed 5 s grid (temperature °C, passenger density pax/m²).
@@ -90,7 +126,7 @@ the SQL warehouse — never Lakebase.
 4. **Delta** — the next pipeline run (every 4h, or on demand) loads them into
    `sensor_readings_<iata>` and `sim_events_<iata>` for Genie and AI/BI.
 
-## 3. Failure behaviour
+## 4. Failure behaviour
 
 | Failure | Effect |
 |---|---|

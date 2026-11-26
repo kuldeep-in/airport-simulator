@@ -2,13 +2,14 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { CalendarClock, PlaneLanding, PlaneTakeoff } from 'lucide-react';
 import { useSimStore } from '../store/useSimStore';
 import { API_STATUS_LABEL, departureDisplayStatus } from '../lib/flightStatus.js';
+import { riskColor, riskPct } from '../lib/delayRisk.js';
 import { PAGE_BG, BOARD_PANEL, ROW_RULE, HEAD_COLOR, STATUS_COLOR, BoardLogo } from '../components/boardTheme.jsx';
 
 const POLL_MS = 15000;
 
 // Board-style column grids (same columns as before, in the same order).
 const IN_COLS = '84px 72px minmax(70px, 1fr) 54px 66px 104px 96px 44px';
-const OUT_COLS = '84px 72px minmax(70px, 1fr) 54px 66px 56px 104px';
+const OUT_COLS = '84px 72px minmax(70px, 1fr) 54px 66px 56px 54px 104px';
 const LOGO = { width: 76, height: 34 };
 const ROW_PAD = '8px 16px';
 
@@ -236,6 +237,11 @@ function OutboundRow({ flight, now, highlighted, faded }) {
       <div style={{ fontSize: 13, color: HEAD_COLOR }}>{flight.aircraft_type}</div>
       <div style={{ fontSize: 14, fontWeight: 600 }}>{flight.assigned_gate ? `Gate ${flight.assigned_gate}` : '—'}</div>
       <div className="mono" style={{ fontSize: 15, fontWeight: 600 }}>{fmtClock(flight.scheduled_dep)}</div>
+      {/* ML delay risk (P of leaving 15+ min late, scored 2 h ahead) — reasons on hover */}
+      <div className="mono" title={flight.delay_risk_reasons?.length ? `Delay risk: ${flight.delay_risk_reasons.join(' · ')}` : 'Not scored yet'}
+           style={{ fontSize: 13, fontWeight: 700, color: flight.delay_risk == null ? HEAD_COLOR : riskColor(flight.delay_risk_band) }}>
+        {riskPct(flight.delay_risk)}
+      </div>
       <div style={{ textAlign: 'right' }}>
         <ApiStatusBadge status={displayStatus} />
       </div>
@@ -375,7 +381,7 @@ export default function ConnectionsPage() {
 
         <div style={BOARD_PANEL}>
           <SectionHeader icon={<PlaneTakeoff size={22} color="#fff" />} title="Outgoing" count={outbound.length}
-                         cols={OUT_COLS} headings={['', 'FLIGHT', 'TO', 'TYPE', 'GATE', 'TIME', 'STATUS']} />
+                         cols={OUT_COLS} headings={['', 'FLIGHT', 'TO', 'TYPE', 'GATE', 'TIME', 'RISK', 'STATUS']} />
           {outbound.length === 0 && <EmptyHint text="Waiting for live departures from AeroDataBox…" />}
           <div>
             {outbound.map((f) => (

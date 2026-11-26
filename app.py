@@ -44,6 +44,7 @@ from server.simulator import gate_state
 from server.simulator import sensor_gen
 from server import generator_supervisor
 from server import genie
+from server import delay_risk
 
 _bg_task = None
 
@@ -181,12 +182,32 @@ async def get_schedule():
     active = airports.IATA
     arr_recs, dep_recs = await flight_store.board_window(now, active)
     live = {r["flight_id"]: r for r in await positions.fetch_for_airport(active)}
+    risk = await delay_risk.by_flight()       # ML delay-risk scores (empty until scored)
+    outbound = []
+    for r in dep_recs:
+        row = _board_row(r, live.get(r["flight_number"]), "departure")
+        sc = risk.get(r["flight_number"])
+        if sc:
+            row.update(delay_risk=sc["risk"], delay_risk_band=sc["risk_band"], delay_risk_reasons=sc["reasons"])
+        outbound.append(row)
     return {
         "inbound": [_board_row(r, live.get(r["flight_number"]), "arrival") for r in arr_recs],
-        "outbound": [_board_row(r, live.get(r["flight_number"]), "departure") for r in dep_recs],
+        "outbound": outbound,
         # Connection pairs are authored static data, so they need no live state.
         "connections": connections.connections_for_schedule(list(live.keys())),
     }
+
+
+@app.get("/api/delay-risk")
+async def get_delay_risk(hours: float = 6.0):
+    """ML delay-risk scores for upcoming departures (P of leaving 15+ min late, scored
+    2 h ahead by the UC-registered champion model), highest first, with in-app alerts."""
+    rows = await delay_risk.upcoming(hours)
+    return {"airport": airports.IATA, "alert_risk": delay_risk.ALERT_RISK,
+            "alert_within_min": delay_risk.ALERT_WITHIN_MIN,
+            "model_version": rows[0]["model_version"] if rows else None,
+            "scored_at": max((r["scored_at"] for r in rows if r["scored_at"]), default=None),
+            "departures": rows, "alerts": [r for r in rows if r["alert"]]}
 
 
 @app.get("/api/genie/space")
